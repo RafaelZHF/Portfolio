@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Dashboard Admin — Rafael L3</title>
+<meta content="#08090a" name="theme-color"/>
+<!-- Halaman ini sengaja tidak diindeks mesin pencari maupun ditampilkan
+     di preview link (bukan halaman publik untuk pengunjung biasa). -->
+<meta content="noindex, nofollow, noarchive" name="robots"/>
+<link href="data:image/svg+xml,&lt;svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22&gt;&lt;rect width=%22100%22 height=%22100%22 rx=%2224%22 fill=%22%2308090a%22/&gt;&lt;circle cx=%2250%22 cy=%2250%22 r=%2226%22 fill=%22%235e6ad2%22/&gt;&lt;/svg&gt;" rel="icon"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<!-- Design tokens (warna, radius, shadow, "liquid glass") dipakai ulang
+     langsung dari situs utama supaya dashboard konsisten secara visual. -->
+<link href="../assets/css/style.css" rel="stylesheet"/>
+<link href="assets/admin.css" rel="stylesheet"/>
+</head>
+<body>
+<div class="admin-shell">
+
+  <!-- ============================================================
+       LOGIN SCREEN
+       ============================================================ -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-brand-mark"></div>
+        <div>
+          <span class="login-brand-text">Rafael L3</span>
+          <span class="login-brand-sub">Dashboard Admin</span>
+        </div>
+      </div>
+
+      <h1 class="login-title">Masuk dulu</h1>
+      <p class="login-desc">
+        Halaman ini khusus untuk mengatur teks di situs portofolio.
+        Masukkan kredensial yang sudah kamu simpan di Cloudflare Secrets.
+      </p>
+
+      <form autocomplete="off" id="loginForm" novalidate>
+        <div class="login-field">
+          <label class="login-label" for="loginUsername">Username</label>
+          <input autocomplete="username" class="login-input" id="loginUsername" name="username" required type="text" />
+        </div>
+        <div class="login-field">
+          <label class="login-label" for="loginPassword">Password</label>
+          <input autocomplete="current-password" class="login-input" id="loginPassword" name="password" required type="password" />
+        </div>
+
+        <div class="login-error" id="loginError"></div>
+
+        <button class="btn btn-accent login-submit" id="loginSubmit" type="submit">Masuk</button>
+      </form>
+
+      <p class="login-footnote">
+        Percobaan gagal berulang akan diblokir sementara oleh server autentikasi.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       DASHBOARD SCREEN (tampil setelah login berhasil)
+       ============================================================ -->
+  <div hidden id="dashboardScreen">
+
+    <header class="dashboard-topbar">
+      <div class="dashboard-topbar-left">
+        <a class="dashboard-topbar-back" href="../index.html">
+          <svg fill="none" height="14" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="14"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
+          Situs
+        </a>
+        <span class="dashboard-topbar-title">Dashboard Admin</span>
+        <span class="unsaved-dot" title="Ada perubahan yang belum disimpan"></span>
+      </div>
+      <div class="dashboard-topbar-right">
+        <span class="topbar-save-status" id="topbarSaveStatus"></span>
+        <button class="btn btn-outline" id="revertBtn" type="button" title="Buang semua perubahan yang belum disimpan, ambil ulang dari server">Revert</button>
+        <button class="btn btn-primary" id="applyChangesBtn" type="button" title="Simpan perubahan ke server — situs live langsung berubah">Apply Changes</button>
+        <span class="dashboard-user">Masuk sebagai <strong id="loggedInAs"></strong></span>
+        <button class="btn btn-outline" id="logoutBtn" type="button">Keluar</button>
+      </div>
+    </header>
+
+    <div class="dashboard-body">
+
+      <!-- Sidebar nav antar-section -->
+      <nav class="dashboard-nav" id="formNav"></nav>
+
+      <!-- Kolom form (di-generate otomatis dari content.js oleh admin.js) -->
+      <main class="dashboard-main">
+        <div class="dashboard-intro">
+          <h1>Atur teks & foto situs</h1>
+          <p>
+            Field di bawah mencerminkan persis struktur <code>assets/js/content.js</code>,
+            dikelompokkan per section, ditambah satu field foto (avatar
+            chat widget). Ubah field apa saja, cek hasilnya di panel
+            pratinjau di kanan, lalu klik <strong>Simpan</strong> di bawah
+            (atau <strong>Apply Changes</strong> di pojok kanan atas) —
+            situs live langsung berubah dalam hitungan detik, tanpa perlu
+            commit atau push apa pun.
+          </p>
+        </div>
+        <!-- Section Foto, DI LUAR #formSections yang auto-generate dari
+             content.js — foto disimpan terpisah di KV key "photo:avatar"
+             (lihat worker/src/index.js), bukan bagian dari content.js,
+             jadi section-nya ditulis manual di sini, bukan hasil generate
+             otomatis oleh buildFormFromContent() di admin.js. -->
+        <section class="form-section" id="section-foto">
+          <h2 class="form-section-title">Foto (Avatar Chat Widget)</h2>
+          <div class="form-section-body">
+            <div class="field">
+              <label class="field-label" for="fotoAvatarInput">Foto avatar</label>
+              <div class="field-image">
+                <img alt="Pratinjau foto avatar" class="field-image-preview" id="fotoAvatarPreview" src="" />
+                <div class="field-image-controls">
+                  <button class="btn btn-outline" id="fotoAvatarPickBtn" type="button">Pilih Foto...</button>
+                  <span class="field-image-filename" id="fotoAvatarFilename">Belum ada foto baru dipilih</span>
+                </div>
+                <input accept="image/png,image/jpeg,image/webp,image/gif" class="field-image-input" id="fotoAvatarInput" type="file" />
+              </div>
+              <p class="field-note">
+                Dipakai sebagai foto avatar di widget chat mengambang (kiri
+                bawah situs). Disimpan sebagai file gambar biasa (PNG/JPG/
+                WEBP/GIF), maksimal sekitar 1.5MB. Foto baru langsung aktif
+                setelah kamu klik Simpan / Apply Changes.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <div id="formSections"><!-- diisi oleh admin.js, section teks dari content.js --></div>
+      </main>
+
+      <!-- Panel pratinjau ringan -->
+      <aside class="dashboard-preview">
+        <p class="preview-heading">Pratinjau Cepat</p>
+
+        <div class="preview-card">
+          <p class="preview-tab-label">Tab browser & SEO</p>
+          <span id="previewPageTitle"></span>
+          <span id="previewHeroHeading"></span>
+          <span id="previewHeroSub"></span>
+          <span id="previewHeroLocation"></span>
+        </div>
+
+        <div class="preview-card">
+          <p class="preview-tab-label">Genre berjalan</p>
+          <div class="preview-chips" id="previewGenreList"></div>
+        </div>
+
+        <div class="preview-card">
+          <p class="preview-tab-label">Katalog karya</p>
+          <div id="previewReleases"></div>
+        </div>
+
+        <div class="preview-card">
+          <p class="preview-tab-label">Kontak & footer</p>
+          <span id="previewEmail"></span>
+          <span id="previewFooterTagline"></span>
+        </div>
+      </aside>
+
+    </div>
+
+    <!-- Bar simpan, selalu terlihat di bawah -->
+    <div class="download-bar">
+      <div>
+        <p class="download-bar-hint">
+          Menyimpan langsung mengubah situs live dalam hitungan detik
+          (data disimpan ke Cloudflare KV lewat Worker) — tidak perlu
+          commit atau push apa pun.
+        </p>
+        <p class="download-status" id="downloadStatus"></p>
+      </div>
+      <button class="btn btn-primary" id="downloadBtn" type="button">Simpan Perubahan</button>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- content.js harus di-load sebelum admin.js, karena admin.js membaca
+     bare identifier CONTENT (bukan window.CONTENT — lihat catatan di
+     enterDashboard() pada admin.js) sebagai baseline FALLBACK, sebelum
+     ditimpa oleh data terbaru dari GET /content (lihat wireLoginForm
+     -> enterDashboard() di admin.js). content.js di sini juga
+     menyediakan RL3_loadRemoteContent()/RL3_loadRemotePhoto() yang
+     dipakai admin.js untuk mengambil draft awal dari server. -->
+<script src="../assets/js/content.js"></script>
+<script src="assets/admin.js"></script>
+</body>
+</html>
