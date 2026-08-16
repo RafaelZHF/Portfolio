@@ -1,7 +1,8 @@
 /* ==========================================================================
    Rafael L3 — Dashboard Admin
-   admin.js — logika login, form editor otomatis, dan simpan-instan ke
-   Cloudflare Worker (KV) — TIDAK LAGI unduh-manual.
+   admin.js — logika login, page routing (Overview/UI Settings/Product
+   Display/Profile), form editor otomatis, dan simpan-instan ke Cloudflare
+   Worker (KV) — TIDAK LAGI unduh-manual.
 
    CATATAN PENTING SOAL CARA KERJA DASHBOARD INI (baca sebelum ubah kode):
 
@@ -9,45 +10,51 @@
    TEKS, FOTO, dan PRODUK tidak lagi disimpan sebagai file statis yang
    perlu commit — ketiganya disimpan di Cloudflare KV lewat Worker yang
    sama dengan yang menangani login (lihat AUTH_API_BASE di bawah, dan
-   worker/src/index.js untuk source Worker-nya). Alurnya sekarang:
+   worker/src/index.js untuk source Worker-nya). Alurnya:
 
      1. Kamu login (POST /login -> Worker mengecek lalu membalas token
-        JWT, sama seperti sebelumnya).
+        JWT).
      2. Begitu login sukses, dashboard mengambil DRAFT AWAL dari
-        GET /content, GET /photo, DAN GET /products (bukan lagi langsung
-        memakai CONTENT/PRODUCTS bawaan) — supaya kamu selalu mulai
-        mengedit dari versi yang SEDANG LIVE di situs, bukan dari
-        fallback statis yang bisa saja sudah usang. Kalau GET /content
-        mengembalikan `content: null` (KV memang belum pernah diisi sama
-        sekali), draft awal baru jatuh balik ke CONTENT bawaan — untuk
-        produk, GET /products mengembalikan array KOSONG kalau memang
-        belum ada produk (bukan sinyal fallback, katalog kosong itu valid).
-     3. Dashboard menampilkan draft itu sebagai form, dikelompokkan
-        persis seperti struktur section di content.js, ditambah satu
-        section khusus Foto (lihat wireFotoField()) dan satu section
-        khusus Katalog Produk (lihat wireProductsSection()).
-     4. Setiap kali kamu ubah field/produk, ada live preview jadi kamu
-        bisa lihat hasilnya sebelum yakin, dan status "ada perubahan
-        belum disimpan" muncul di topbar.
-     5. Klik "Simpan Perubahan" (bar bawah) ATAU "Apply Changes" (pojok
-        kanan atas, keduanya memanggil fungsi yang sama) -> dashboard
-        mengirim PUT /content, PUT /photo (kalau kamu ganti foto), dan
-        PUT /products (kalau ada perubahan produk) ke Worker. Begitu
-        berhasil, KV langsung ter-update. Lain kali situs utama/shop
-        (atau tab dashboard lain) di-refresh, GET /content|/photo|/products
-        otomatis mengembalikan versi baru ini — TIDAK ADA proses
-        build/commit/push sama sekali, dan TIDAK ADA file yang perlu
-        diunduh manual.
-     6. Kalau berubah pikiran sebelum sempat Simpan, klik "Revert" — ini
-        MEMBUANG seluruh draft yang sedang diedit (teks, foto, DAN
-        produk) dan mengambil ulang versi tersimpan terakhir dari server,
-        seperti "undo semua" ke titik terakhir kali disimpan.
+        GET /content, GET /photo, DAN GET /products — supaya kamu selalu
+        mulai mengedit dari versi yang SEDANG LIVE di situs.
+     3. Dashboard menampilkan draft itu di tiga halaman terpisah: UI
+        Settings (teks + foto), Product Display (katalog shop), dan
+        Profile (info sesi login kamu sendiri) — ditambah halaman
+        Overview sebagai halaman utama saat dashboard dibuka.
+     4. Setiap kali kamu ubah field/produk, status "ada perubahan belum
+        disimpan" muncul di topbar.
+     5. Klik "Simpan Perubahan" (bar bawah) ATAU "Apply Changes" (topbar,
+        keduanya memanggil fungsi yang sama) -> dashboard mengirim
+        PUT /content, PUT /photo (kalau ganti foto), dan PUT /products
+        (kalau ada perubahan produk) ke Worker.
+     6. "Revert" membuang seluruh draft yang sedang diedit dan mengambil
+        ulang versi tersimpan terakhir dari server.
 
-   Kenapa masih ada CONTENT statis di content.js? Itu sekarang murni
-   FALLBACK/DEFAULT — dipakai kalau KV benar-benar belum pernah diisi,
-   atau kalau Worker sedang tidak bisa dihubungi saat dashboard dibuka.
-   Lihat komentar di assets/js/content.js untuk detail lengkapnya. Pola
-   yang sama berlaku untuk PRODUCTS di shop-content.js.
+   SOAL HALAMAN PROFILE — PENTING DIBACA SEBELUM MENGUBAH:
+   Dashboard ini pakai SATU akun admin tunggal (ADMIN_USERNAME/
+   ADMIN_PASSWORD tersimpan sebagai Cloudflare Secrets di Worker, BUKAN
+   tabel/database banyak user). Endpoint GET /verify cuma membalas
+   { valid, username } — username di situ adalah string yang sama persis
+   dengan yang diketik di form login, bukan hasil query ke sistem user
+   manapun. Karena itu halaman Profile TIDAK BISA "mendeteksi siapa dari
+   banyak kemungkinan orang yang sedang login" — ia menampilkan sesi akun
+   tunggal itu (username dari token, jam login, sisa masa berlaku token
+   24 jam dihitung dari saat login). Kalau suatu saat kamu tambah sistem
+   multi-admin sungguhan di Worker, halaman ini perlu endpoint baru untuk
+   itu — lihat computeProfileState() di bagian PROFILE PAGE di bawah.
+
+   SOAL KARTU PETA DI OVERVIEW:
+   Peta menampilkan lokasi ESTIMASI dari sesi browser yang SEDANG membuka
+   dashboard ini (kamu, saat ini) — bukan daftar/riwayat semua orang yang
+   pernah login. Ini dari layanan geolocation IP publik (ipapi.co, lihat
+   fetchVisitorGeo() di bagian OVERVIEW), bukan GPS presisi, dan tidak ada
+   penyimpanan riwayat di server manapun — murni ditampilkan sekali per
+   sesi dashboard dibuka.
+
+   Kenapa masih ada CONTENT statis di content.js? Itu murni FALLBACK/
+   DEFAULT — dipakai kalau KV benar-benar belum pernah diisi, atau kalau
+   Worker sedang tidak bisa dihubungi saat dashboard dibuka. Pola yang
+   sama berlaku untuk PRODUCTS di shop-content.js.
    ========================================================================== */
 
 (function () {
@@ -57,56 +64,62 @@
   // KONFIGURASI
   // ------------------------------------------------------------
   // URL Cloudflare Worker yang menangani /login, /verify, /content,
-  // dan /photo. HARUS SAMA dengan RL3_AUTH_API_BASE di content.js —
-  // kalau alamat Worker berubah, ganti di DUA tempat itu (tidak ada
-  // tempat ketiga).
+  // /photo, /products, /product-image. HARUS SAMA dengan
+  // RL3_AUTH_API_BASE di content.js — kalau alamat Worker berubah, ganti
+  // di DUA tempat itu (tidak ada tempat ketiga).
   const AUTH_API_BASE = "https://dashboard-key.ffkz946.workers.dev";
 
   // Key sessionStorage tempat token JWT disimpan. Sengaja pakai
   // sessionStorage (bukan localStorage) supaya token OTOMATIS hilang
-  // begitu tab/browser ditutup — dashboard admin tidak "nempel" permanen
-  // di browser yang dipakai bersama atau di komputer publik.
+  // begitu tab/browser ditutup.
   const TOKEN_STORAGE_KEY = "rl3_admin_token";
 
+  // Key sessionStorage tempat WAKTU LOGIN (epoch ms) disimpan — dipakai
+  // murni untuk ditampilkan di halaman Profile ("Waktu masuk" / "Sesi
+  // berakhir sekitar"), TIDAK dipakai Worker untuk validasi apa pun
+  // (validasi token tetap sepenuhnya di server lewat /verify).
+  const LOGIN_TIME_STORAGE_KEY = "rl3_admin_login_time";
+
   // Berapa lama animasi fade login -> dashboard (ms). HARUS SAMA dengan
-  // --admin-transition-duration di admin.css — kalau salah satu diubah,
-  // ubah juga yang satunya, supaya class is-transitioning-out/in dilepas
-  // JS tepat saat animasi CSS-nya selesai (tidak lebih cepat/lambat).
+  // --admin-transition-duration di admin.css.
   const ADMIN_TRANSITION_MS = 420;
+
+  // Umur token JWT di server (lihat README2.md bagian 5) — dipakai
+  // murni untuk estimasi "Sesi berakhir sekitar" di halaman Profile,
+  // BUKAN sumber kebenaran (kebenarannya tetap /verify di server, yang
+  // akan menolak token walau estimasi klien di sini belum "habis").
+  const TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+  // localStorage key untuk state sidebar (grup mana yang diciutkan,
+  // apakah sidebar penuh diciutkan) — preferensi UI murni, aman
+  // disimpan permanen (beda dengan token, ini bukan kredensial).
+  const SIDENAV_COLLAPSED_KEY = "rl3_admin_sidenav_collapsed";
+  const SIDENAV_GROUP_STATE_KEY = "rl3_admin_sidenav_groups";
 
   // ------------------------------------------------------------
   // STATE
   // ------------------------------------------------------------
-  // draftContent = salinan kerja dari teks yang sedang diedit di form.
-  // Diisi dari GET /content (atau fallback CONTENT bawaan) saat login,
-  // dan direset ulang dari server lagi tiap kali tombol Revert ditekan.
   let draftContent = null;
-
-  // draftPhotoDataUrl = foto BARU yang dipilih user lewat input file
-  // (base64 data URL), belum tentu sudah disimpan ke server. null berarti
-  // user belum memilih foto baru sama sekali di sesi edit ini (foto yang
-  // sedang live TIDAK berubah kalau field ini null saat Simpan ditekan
-  // — lihat saveAll(), PUT /photo cuma dipanggil kalau field ini terisi).
   let draftPhotoDataUrl = null;
-
-  // currentPhotoDataUrl = foto yang SEDANG tersimpan di server (hasil
-  // GET /photo), dipakai buat preview awal & buat Revert kembali ke sini.
   let currentPhotoDataUrl = null;
-
-  // isSaving = flag guard supaya tombol Simpan/Apply Changes tidak bisa
-  // dipencet dobel (klik ganda / klik saat request sebelumnya belum
-  // selesai) yang bisa memicu dua PUT /content beriringan.
   let isSaving = false;
-
-  // draftProducts = salinan kerja array produk katalog shop yang sedang
-  // diedit (tambah/hapus/ubah field). Diisi dari GET /products saat
-  // login, dan direset ulang dari server tiap kali Revert ditekan — pola
-  // identik draftContent, tapi array (bukan object), dan TIDAK ada
-  // "currentProducts" terpisah (beda dengan foto) karena tidak ada
-  // konsep "belum tentu terkirim, tunggu tombol Simpan" untuk field
-  // gambar per-produk — begitu file dipilih, langsung jadi bagian
-  // draftProducts (base64-nya), sama seperti field teks primitif lain.
   let draftProducts = [];
+
+  // currentPage = halaman aktif saat ini ("overview" | "ui-settings" |
+  // "product-display" | "profile"). Disinkronkan dengan location.hash.
+  let currentPage = "overview";
+
+  // Interval handle untuk jam Overview (dibersihkan/di-set ulang tidak
+  // perlu karena hanya dibuat sekali di init(), tapi disimpan di sini
+  // untuk kejelasan/debug).
+  let overviewClockInterval = null;
+
+  // Leaflet map instance + marker, dibuat sekali dan dipakai ulang
+  // (bukan dibuat ulang tiap kali halaman Overview dibuka) supaya tidak
+  // ada memory leak dari re-init Leaflet berkali-kali.
+  let leafletMap = null;
+  let leafletMarker = null;
+  let hasFetchedVisitorGeo = false;
 
   // ------------------------------------------------------------
   // ENTRY POINT
@@ -119,18 +132,12 @@
     wireTopbarButtons();
     wireFotoField();
     wireProductsSection();
+    wireSideNav();
+    wirePageRouting();
+    wireMobileNav();
 
     const existingToken = getStoredToken();
     if (existingToken) {
-      // Ada token tersimpan dari sesi sebelumnya — cek dulu ke worker
-      // apakah masih valid sebelum langsung buka dashboard. Token bisa
-      // sudah kedaluwarsa (umur 24 jam) atau di-tolak worker karena
-      // alasan lain, jadi jangan asal percaya isi sessionStorage.
-      //
-      // Jalur ini (auto-login saat refresh halaman) SENGAJA tidak pakai
-      // animasi fade seperti transitionToDashboard() di bawah — animasi
-      // itu cocok sebagai respons atas klik "Masuk", tapi terasa aneh
-      // kalau muncul begitu saja saat halaman baru selesai dimuat.
       verifyToken(existingToken).then((result) => {
         if (result.valid) {
           enterDashboard(result.username);
@@ -189,6 +196,7 @@
         }
 
         storeToken(data.token);
+        storeLoginTime(Date.now());
         await transitionToDashboard(username);
       } catch (err) {
         // Kemungkinan network error, worker down, atau CORS ditolak
@@ -202,24 +210,33 @@
   }
 
   function wireLogoutButton() {
-    const btn = document.getElementById("logoutBtn");
-    if (!btn) return;
-    btn.addEventListener("click", () => {
-      const hasUnsaved = document.body.classList.contains("has-unsaved-changes");
-      if (hasUnsaved) {
-        const ok = confirm(
-          "Ada perubahan yang belum disimpan. Yakin mau keluar? Perubahan itu akan hilang (situs live TIDAK berubah karena belum sempat di-Apply Changes)."
-        );
-        if (!ok) return;
-      }
-      clearStoredToken();
-      draftContent = null;
-      draftPhotoDataUrl = null;
-      currentPhotoDataUrl = null;
-      draftProducts = [];
-      document.body.classList.remove("has-unsaved-changes");
-      showLoginScreen();
-    });
+    // DUA tombol logout sekarang ("Keluar" di footer sidebar, dan
+    // "Keluar dari akun ini" di halaman Profile) — keduanya memanggil
+    // fungsi yang identik, jadi disatukan lewat doLogout() alih-alih
+    // duplikasi logika konfirmasi.
+    const sideBtn = document.getElementById("logoutBtn");
+    if (sideBtn) sideBtn.addEventListener("click", doLogout);
+
+    const profileBtn = document.getElementById("profileLogoutBtn");
+    if (profileBtn) profileBtn.addEventListener("click", doLogout);
+  }
+
+  function doLogout() {
+    const hasUnsaved = document.body.classList.contains("has-unsaved-changes");
+    if (hasUnsaved) {
+      const ok = confirm(
+        "Ada perubahan yang belum disimpan. Yakin mau keluar? Perubahan itu akan hilang (situs live TIDAK berubah karena belum sempat di-Apply Changes)."
+      );
+      if (!ok) return;
+    }
+    clearStoredToken();
+    clearLoginTime();
+    draftContent = null;
+    draftPhotoDataUrl = null;
+    currentPhotoDataUrl = null;
+    draftProducts = [];
+    document.body.classList.remove("has-unsaved-changes");
+    showLoginScreen();
   }
 
   async function verifyToken(token) {
@@ -234,9 +251,6 @@
       }
       return { valid: true, username: data.username };
     } catch {
-      // Kalau /verify gagal karena network, jangan langsung anggap token
-      // invalid dan tendang user keluar — anggap saja verifikasi gagal
-      // dan biarkan login screen tampil lagi supaya user bisa coba ulang.
       return { valid: false };
     }
   }
@@ -245,8 +259,6 @@
     try {
       return sessionStorage.getItem(TOKEN_STORAGE_KEY);
     } catch {
-      // Sebagian browser (mode private ketat / storage diblokir) bisa
-      // melempar error saat mengakses sessionStorage.
       return null;
     }
   }
@@ -263,6 +275,37 @@
   function clearStoredToken() {
     try {
       sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+      /* no-op */
+    }
+  }
+
+  // storeLoginTime/getStoredLoginTime/clearLoginTime — murni untuk
+  // ditampilkan di halaman Profile (lihat computeProfileState()), bukan
+  // bagian dari alur autentikasi. Kalau gagal ditulis (storage diblokir),
+  // halaman Profile jatuh balik menampilkan "—" alih-alih error, lihat
+  // refreshProfilePage().
+  function storeLoginTime(epochMs) {
+    try {
+      sessionStorage.setItem(LOGIN_TIME_STORAGE_KEY, String(epochMs));
+    } catch {
+      /* no-op */
+    }
+  }
+
+  function getStoredLoginTime() {
+    try {
+      const raw = sessionStorage.getItem(LOGIN_TIME_STORAGE_KEY);
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearLoginTime() {
+    try {
+      sessionStorage.removeItem(LOGIN_TIME_STORAGE_KEY);
     } catch {
       /* no-op */
     }
@@ -289,20 +332,9 @@
     document.body.classList.remove("is-dashboard", "is-transitioning-out", "is-transitioning-in");
     const pwField = document.getElementById("loginPassword");
     if (pwField) pwField.value = "";
+    stopOverviewClock();
   }
 
-  // Ambil draft AWAL dari server: GET /content (teks) + GET /photo
-  // (foto), lalu isi draftContent/currentPhotoDataUrl dari hasilnya.
-  // Kalau /content mengembalikan content: null (KV belum pernah diisi
-  // sama sekali), jatuh balik ke CONTENT bawaan content.js. Dipisah jadi
-  // fungsi sendiri supaya bisa dipakai ulang oleh enterDashboard() DAN
-  // revertChanges() (revert = "ambil ulang draft dari server", persis
-  // proses yang sama dengan saat pertama masuk dashboard).
-  //
-  // PENTING soal CONTENT sebagai bare identifier: sama seperti
-  // penjelasan sebelumnya, CONTENT diakses langsung (bukan
-  // window.CONTENT) karena content.js mendeklarasikannya dengan
-  // top-level `const` di dalam <script> classic, bukan type="module".
   async function loadDraftFromServer() {
     let remoteContent = null;
     try {
@@ -326,17 +358,8 @@
       currentPhotoDataUrl = null;
     }
 
-    // draftPhotoDataUrl direset setiap kali draft diambil ulang dari
-    // server (masuk dashboard pertama kali, atau setelah Revert) — draft
-    // foto yang belum disimpan memang seharusnya tidak "menempel" lewat
-    // proses ini.
     draftPhotoDataUrl = null;
 
-    // Produk: GET /products membalas array KOSONG kalau memang belum ada
-    // produk sama sekali (bukan sinyal error/fallback, lihat catatan di
-    // worker/src/index.js) — jadi array kosong dari server DIPAKAI apa
-    // adanya, TIDAK ditimpa fallback PRODUCTS. Fallback hanya dipakai
-    // kalau request-nya sendiri gagal total (network/parse error).
     try {
       const res = await fetch(AUTH_API_BASE + "/products", { method: "GET" });
       const data = await res.json().catch(() => null);
@@ -351,7 +374,7 @@
   }
 
   // Dipakai saat AUTO-LOGIN (token dari sessionStorage masih valid) —
-  // TANPA animasi fade, karena bukan respons langsung atas klik user.
+  // TANPA animasi fade.
   async function enterDashboard(username) {
     await loadDraftFromServer();
 
@@ -359,23 +382,17 @@
     document.getElementById("dashboardScreen").hidden = false;
     document.body.classList.add("is-dashboard");
 
-    const whoEl = document.getElementById("loggedInAs");
-    if (whoEl) whoEl.textContent = username || "";
-
+    setLoggedInUsername(username);
     buildFormFromContent(draftContent);
     refreshFotoPreview();
     renderProductsSection();
     clearUnsavedState();
+    startOverviewClock();
+    checkWorkerStatus();
+    navigateToPage(getPageFromHash(), { skipHashUpdate: true });
   }
 
-  // Dipakai SETELAH submit form login sukses — dengan animasi fade out
-  // (login-screen) lalu fade in (dashboard-screen), sesuai durasi
-  // ADMIN_TRANSITION_MS (harus sinkron dengan --admin-transition-duration
-  // di admin.css). Fetch draft dari server (loadDraftFromServer) sengaja
-  // dijalankan BERSAMAAN dengan fade out (Promise.all), bukan berurutan
-  // setelahnya — supaya total waktu tunggu user tidak jadi
-  // "fade out selesai, BARU mulai nunggu fetch", melainkan dua proses ini
-  // tumpang tindih dan dashboard baru fade in begitu KEDUANYA selesai.
+  // Dipakai SETELAH submit form login sukses — dengan animasi fade.
   async function transitionToDashboard(username) {
     document.body.classList.add("is-transitioning-out");
 
@@ -385,21 +402,17 @@
     document.getElementById("dashboardScreen").hidden = false;
     document.body.classList.remove("is-transitioning-out");
 
-    const whoEl = document.getElementById("loggedInAs");
-    if (whoEl) whoEl.textContent = username || "";
-
+    setLoggedInUsername(username);
     buildFormFromContent(draftContent);
     refreshFotoPreview();
     renderProductsSection();
     clearUnsavedState();
+    startOverviewClock();
+    checkWorkerStatus();
+    // Login baru selalu masuk ke Overview dulu, apa pun hash yang
+    // kebetulan tertinggal dari sesi sebelumnya.
+    navigateToPage("overview");
 
-    // Trigger reflow supaya browser "melihat" #dashboardScreen dalam
-    // keadaan opacity:0 (dari CSS `#dashboardScreen { opacity: 0; }`)
-    // SEBELUM class is-transitioning-in ditambah pada frame berikutnya
-    // — tanpa ini, browser bisa saja menggabungkan kedua perubahan
-    // style jadi satu batch dan transition opacity tidak sempat
-    // ter-animasi sama sekali (dashboard langsung muncul instan, tanpa
-    // fade in yang diminta).
     document.getElementById("dashboardScreen").offsetHeight;
 
     document.body.classList.add("is-transitioning-in");
@@ -412,20 +425,239 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // Set nama akun yang login di DUA tempat sekaligus: chip profil
+  // topbar (loggedInAs) dan halaman Profile (profileUsername/profileName)
+  // — disatukan di sini supaya kedua tempat itu tidak bisa "kelupaan"
+  // di-update salah satu saat login/auto-login terjadi.
+  function setLoggedInUsername(username) {
+    const name = username || "";
+    const whoEl = document.getElementById("loggedInAs");
+    if (whoEl) whoEl.textContent = name;
+    refreshProfilePage(name);
+  }
+
   // ==============================================================
-  // FORM GENERATOR
+  // PAGE ROUTING (Overview / UI Settings / Product Display / Profile)
+  // ------------------------------------------------------------
+  // Empat "halaman" dashboard sekarang adalah <section data-page="...">
+  // yang di-toggle lewat class is-active, bukan satu scroll panjang
+  // seperti versi sebelumnya. Navigasi dikendalikan oleh location.hash
+  // (mis. #ui-settings) supaya URL bisa di-refresh/di-bookmark ke
+  // halaman yang sama, dan diklik dari mana saja lewat elemen ber-
+  // attribute [data-page] (link sidebar, chip profil topbar, dst).
+  // ==============================================================
+  const VALID_PAGES = ["overview", "ui-settings", "product-display", "profile"];
+  const PAGE_TITLES = {
+    overview: "Overview",
+    "ui-settings": "UI Settings",
+    "product-display": "Product Display",
+    profile: "Profile",
+  };
+
+  function getPageFromHash() {
+    const raw = (location.hash || "").replace(/^#/, "");
+    return VALID_PAGES.indexOf(raw) !== -1 ? raw : "overview";
+  }
+
+  function wirePageRouting() {
+    // Klik pada APAPUN yang punya [data-page] menavigasi ke halaman itu
+    // — dipasang lewat satu delegated listener di document supaya
+    // elemen baru (mis. hasil re-render sidebar) otomatis ikut tertangani
+    // tanpa perlu di-wire ulang satu-satu.
+    document.addEventListener("click", (e) => {
+      const trigger = e.target.closest("[data-page]");
+      if (!trigger) return;
+      e.preventDefault();
+      navigateToPage(trigger.getAttribute("data-page"));
+    });
+
+    window.addEventListener("hashchange", () => {
+      navigateToPage(getPageFromHash(), { skipHashUpdate: true });
+    });
+  }
+
+  function navigateToPage(pageKey, opts) {
+    const key = VALID_PAGES.indexOf(pageKey) !== -1 ? pageKey : "overview";
+    const options = opts || {};
+
+    currentPage = key;
+
+    document.querySelectorAll(".dashboard-page").forEach((el) => {
+      el.classList.toggle("is-active", el.getAttribute("data-page") === key);
+    });
+
+    document.querySelectorAll(".side-link[data-page]").forEach((el) => {
+      el.classList.toggle("is-active", el.getAttribute("data-page") === key);
+    });
+
+    const titleEl = document.getElementById("topbarPageTitle");
+    if (titleEl) titleEl.textContent = PAGE_TITLES[key] || "Dashboard";
+
+    if (!options.skipHashUpdate && location.hash.replace(/^#/, "") !== key) {
+      history.replaceState(null, "", "#" + key);
+    }
+
+    // Kalau grup sidebar yang berisi link aktif sedang diciutkan, buka
+    // otomatis supaya halaman yang lagi dibuka tidak "hilang" dari
+    // pandangan di sidebar.
+    const activeLink = document.querySelector('.side-link[data-page="' + key + '"]');
+    const parentGroup = activeLink && activeLink.closest(".side-group-collapsible");
+    if (parentGroup && parentGroup.getAttribute("data-collapsed") === "true") {
+      setGroupCollapsed(parentGroup, false);
+    }
+
+    // Overview: begitu halaman ini aktif, mulai fetch lokasi pengakses
+    // (sekali per sesi dashboard, lihat guard hasFetchedVisitorGeo di
+    // dalam fungsinya) dan pastikan peta Leaflet me-render ukurannya
+    // dengan benar (Leaflet butuh invalidateSize() kalau container-nya
+    // sempat disembunyikan lewat display:none saat pertama diinisialisasi).
+    if (key === "overview") {
+      ensureLeafletMap();
+      fetchVisitorGeo();
+      refreshOverviewStats();
+    }
+
+    // Menutup drawer sidebar mobile setiap kali pindah halaman (kalau
+    // sedang terbuka) — di layar sempit, navigasi = maksud user sudah
+    // selesai memilih, drawer tidak perlu tetap menutupi layar.
+    document.body.classList.remove("mobile-nav-open");
+  }
+
+  // ==============================================================
+  // SIDEBAR — grup collapsible + collapse sidebar penuh
+  // ------------------------------------------------------------
+  // Dua state independen, disimpan terpisah di localStorage (preferensi
+  // tampilan murni, aman disimpan permanen — beda dengan token login):
+  //   1. Grup mana yang diciutkan (mis. "Settings" ditutup) ->
+  //      SIDENAV_GROUP_STATE_KEY, object { [groupName]: boolean }
+  //   2. Apakah SELURUH sidebar diciutkan jadi mode ikon saja ->
+  //      SIDENAV_COLLAPSED_KEY, "true"/"false"
+  // ==============================================================
+  function wireSideNav() {
+    // ---- Toggle per-grup ----
+    document.querySelectorAll(".side-group-collapsible").forEach((group) => {
+      const toggleBtn = group.querySelector(".side-group-toggle");
+      if (!toggleBtn) return;
+      toggleBtn.addEventListener("click", () => {
+        const isCollapsed = group.getAttribute("data-collapsed") === "true";
+        setGroupCollapsed(group, !isCollapsed);
+      });
+    });
+
+    // Terapkan state grup yang tersimpan dari sesi sebelumnya.
+    const savedGroupState = readJsonFromStorage(SIDENAV_GROUP_STATE_KEY, {});
+    document.querySelectorAll(".side-group-collapsible").forEach((group) => {
+      const name = group.getAttribute("data-group");
+      if (name && savedGroupState[name]) {
+        setGroupCollapsed(group, true, { skipSave: true });
+      }
+    });
+
+    // ---- Toggle sidebar penuh (mode ikon) ----
+    const collapseBtn = document.getElementById("sideNavCollapseBtn");
+    if (collapseBtn) {
+      collapseBtn.addEventListener("click", () => {
+        const isCollapsed = document.body.classList.contains("side-nav-collapsed");
+        setSideNavCollapsed(!isCollapsed);
+      });
+    }
+    const savedFullCollapse = readFromStorage(SIDENAV_COLLAPSED_KEY) === "true";
+    setSideNavCollapsed(savedFullCollapse, { skipSave: true });
+  }
+
+  function setGroupCollapsed(groupEl, collapsed, opts) {
+    const options = opts || {};
+    groupEl.setAttribute("data-collapsed", collapsed ? "true" : "false");
+    const toggleBtn = groupEl.querySelector(".side-group-toggle");
+    if (toggleBtn) toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+
+    if (!options.skipSave) {
+      const name = groupEl.getAttribute("data-group");
+      if (name) {
+        const state = readJsonFromStorage(SIDENAV_GROUP_STATE_KEY, {});
+        state[name] = collapsed;
+        writeJsonToStorage(SIDENAV_GROUP_STATE_KEY, state);
+      }
+    }
+  }
+
+  function setSideNavCollapsed(collapsed, opts) {
+    const options = opts || {};
+    document.body.classList.toggle("side-nav-collapsed", collapsed);
+    const btn = document.getElementById("sideNavCollapseBtn");
+    if (btn) btn.setAttribute("title", collapsed ? "Perluas sidebar" : "Ciutkan sidebar");
+
+    if (!options.skipSave) {
+      writeToStorage(SIDENAV_COLLAPSED_KEY, collapsed ? "true" : "false");
+    }
+
+    // Leaflet perlu tahu ukuran container-nya berubah setiap kali
+    // sidebar diciutkan/dibuka (lebar kolom kanan ikut berubah), atau
+    // peta akan tampil terpotong/blank sampai user resize window manual.
+    if (leafletMap) {
+      window.setTimeout(() => leafletMap.invalidateSize(), 240);
+    }
+  }
+
+  // ---- Mobile drawer (sidebar overlay di layar sempit) ----
+  function wireMobileNav() {
+    const btn = document.getElementById("mobileNavBtn");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        document.body.classList.toggle("mobile-nav-open");
+      });
+    }
+
+    // Klik di luar drawer (backdrop, lewat pseudo-element ::after)
+    // menutup drawer — dideteksi lewat klik pada <body> di luar .side-nav.
+    document.addEventListener("click", (e) => {
+      if (!document.body.classList.contains("mobile-nav-open")) return;
+      if (e.target.closest(".side-nav") || e.target.closest("#mobileNavBtn")) return;
+      document.body.classList.remove("mobile-nav-open");
+    });
+  }
+
+  // ---- Helper localStorage kecil, dengan try/catch (sama alasannya
+  // dengan getStoredToken dkk — sebagian browser bisa memblokir storage) ----
+  function readFromStorage(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+  function writeToStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* no-op */
+    }
+  }
+  function readJsonFromStorage(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function writeJsonToStorage(key, obj) {
+    try {
+      localStorage.setItem(key, JSON.stringify(obj));
+    } catch {
+      /* no-op */
+    }
+  }
+
+  // ==============================================================
+  // FORM GENERATOR (UI Settings)
   // ------------------------------------------------------------
   // Membaca struktur draftContent (hasil clone dari CONTENT di
   // content.js) dan otomatis bikin section + field form untuk tiap
-  // bagian. Ini supaya kalau suatu saat field baru ditambah di
-  // content.js, dashboard TIDAK perlu diedit manual satu-satu — form
-  // baru otomatis muncul (walau labelnya masih generik, lihat
-  // humanizeKey()).
+  // bagian. Logika ini TIDAK berubah dari versi sebelumnya — cuma
+  // targetnya sekarang khusus halaman UI Settings (#formSections di
+  // dalam #page-ui-settings), bukan satu-satunya isi dashboard.
   // ==============================================================
-
-  // Label section yang lebih manusiawi + urutan tampil. Section yang
-  // tidak ada di daftar ini tetap dirender (fallback ke humanizeKey),
-  // cuma taruh di akhir.
   const SECTION_LABELS = {
     meta: "Meta (Tab Browser & SEO)",
     navbar: "Navbar",
@@ -446,13 +678,8 @@
 
   const SECTION_ORDER = Object.keys(SECTION_LABELS);
 
-  // Field yang isinya HTML (ada tag <strong>, <br>, dst) — dirender
-  // sebagai textarea dengan catatan supaya tag-nya tidak dihapus tanpa
-  // sadar, alih-alih <input> teks satu baris biasa.
   const HTML_FIELDS = new Set(["skill.desc"]);
 
-  // Field yang secara semantik multi-baris walau tidak mengandung HTML
-  // (deskripsi panjang) — tetap pakai textarea supaya nyaman diedit.
   const LONG_TEXT_KEYS = new Set([
     "desc",
     "subheading",
@@ -480,7 +707,7 @@
       container.appendChild(sectionEl);
     });
 
-    buildNav(orderedKeys);
+    buildUiSettingsSubnav(orderedKeys);
     refreshPreview();
   }
 
@@ -503,8 +730,6 @@
     return section;
   }
 
-  // path = array of keys/indices dari root draftContent sampai ke value
-  // ini, contoh: ["hero", "meta", "location"] atau ["karya", "releases", 2, "title"]
   function renderFieldsInto(parentEl, value, path) {
     if (Array.isArray(value)) {
       renderArrayField(parentEl, value, path);
@@ -516,11 +741,7 @@
         const childPath = path.concat(key);
         const childValue = value[key];
 
-        if (
-          (childValue !== null && typeof childValue === "object")
-        ) {
-          // Nested object/array -> subgroup dengan label, supaya
-          // strukturnya kelihatan (mis. hero.panel.navItems).
+        if (childValue !== null && typeof childValue === "object") {
           const group = document.createElement("div");
           group.className = "field-group";
           const label = document.createElement("div");
@@ -536,8 +757,6 @@
       return;
     }
 
-    // value primitif di root path (jarang terjadi di struktur ini, tapi
-    // dijaga untuk kelengkapan)
     renderPrimitiveField(parentEl, value, path, path[path.length - 1]);
   }
 
@@ -561,15 +780,12 @@
         renderFieldsInto(card, item, itemPath);
         wrap.appendChild(card);
       } else {
-        // array of primitives (contoh: logoBar.items, hero.panel.navItems)
         renderPrimitiveField(wrap, item, itemPath, String(index), true);
       }
     });
   }
 
   function describeArrayItem(item, index) {
-    // Coba cari field yang paling representatif untuk dijadikan label
-    // kartu (misalnya "title" pada rilisan karya, "label" pada tools).
     const candidateKeys = ["title", "label", "name", "tag", "who", "heading"];
     for (const k of candidateKeys) {
       if (typeof item[k] === "string" && item[k].trim()) {
@@ -652,8 +868,6 @@
     cur[path[path.length - 1]] = value;
   }
 
-  // Ubah camelCase / snake-ish key jadi label yang gampang dibaca,
-  // mis. "pageTitle" -> "Page Title", "btnAccent" -> "Btn Accent".
   function humanizeKey(key) {
     const withSpaces = String(key)
       .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -662,49 +876,39 @@
   }
 
   // ==============================================================
-  // SIDEBAR NAV (loncat antar section)
+  // SUBNAV UI SETTINGS (loncat antar section di dalam halaman ini)
+  // ------------------------------------------------------------
+  // Pengganti buildNav() versi lama — dulu ini adalah SATU-SATUNYA
+  // sidebar dashboard (termasuk link ke section Foto & Produk yang
+  // sekarang sudah jadi halaman/section terpisah). Sekarang khusus
+  // subnav internal halaman UI Settings, targetnya #uiSettingsSubnav
+  // (kolom kiri di dalam .settings-layout), dan hanya berisi section
+  // yang memang ada di halaman ini (Foto + section dari content.js).
   // ==============================================================
-  function buildNav(orderedKeys) {
-    const nav = document.getElementById("formNav");
+  function buildUiSettingsSubnav(orderedKeys) {
+    const nav = document.getElementById("uiSettingsSubnav");
+    if (!nav) return;
     nav.innerHTML = "";
 
-    // Link "Foto" ditambah manual di awal — section-nya statis di HTML
-    // (admin/index.html), bukan hasil generate dari orderedKeys (yang
-    // berasal dari struktur content, sedangkan foto disimpan terpisah).
-    const fotoLink = document.createElement("a");
-    fotoLink.href = "#section-foto";
-    fotoLink.className = "form-nav-link";
-    fotoLink.textContent = "Foto (Avatar Chat)";
-    fotoLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      const target = document.getElementById("section-foto");
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    nav.appendChild(fotoLink);
+    const allKeys = [{ id: "foto", label: "Foto (Avatar Chat)" }].concat(
+      orderedKeys.map((key) => ({
+        id: key,
+        label: SECTION_LABELS[key] || humanizeKey(key),
+      }))
+    );
 
-    // Link "Katalog Produk" — sama alasannya dengan link Foto di atas:
-    // section-nya statis di HTML (#section-produk), bukan hasil generate
-    // dari orderedKeys, karena produk disimpan terpisah dari content.js.
-    const produkLink = document.createElement("a");
-    produkLink.href = "#section-produk";
-    produkLink.className = "form-nav-link";
-    produkLink.textContent = "Katalog Produk (Shop)";
-    produkLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      const target = document.getElementById("section-produk");
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    nav.appendChild(produkLink);
-
-    orderedKeys.forEach((key) => {
+    allKeys.forEach((entry, index) => {
       const link = document.createElement("a");
-      link.href = "#section-" + key;
+      link.href = "#section-" + entry.id;
       link.className = "form-nav-link";
-      link.textContent = SECTION_LABELS[key] || humanizeKey(key);
+      if (index === 0) link.classList.add("is-active");
+      link.textContent = entry.label;
       link.addEventListener("click", (e) => {
         e.preventDefault();
-        const target = document.getElementById("section-" + key);
+        const target = document.getElementById("section-" + entry.id);
         if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        nav.querySelectorAll(".form-nav-link").forEach((l) => l.classList.remove("is-active"));
+        link.classList.add("is-active");
       });
       nav.appendChild(link);
     });
@@ -713,11 +917,11 @@
   // ==============================================================
   // FIELD FOTO (avatar chat widget)
   // ------------------------------------------------------------
-  // Terpisah dari form generator otomatis (foto bukan bagian dari
-  // content.js) — cukup diambil dari base64 file yang dipilih user
-  // lewat <input type="file">, lalu disimpan ke draftPhotoDataUrl.
-  // Belum dikirim ke server sampai saveAll() dipanggil (tombol
-  // Simpan/Apply Changes).
+  // Logika tidak berubah dari versi sebelumnya — foto disimpan
+  // terpisah dari content.js (KV key "photo:avatar"). Satu tambahan:
+  // refreshFotoPreview() sekarang JUGA memperbarui avatar di chip
+  // profil topbar dan di halaman Profile, karena keduanya menampilkan
+  // foto yang sama (lihat catatan di admin/index.html section Foto).
   // ==============================================================
   function wireFotoField() {
     const pickBtn = document.getElementById("fotoAvatarPickBtn");
@@ -731,15 +935,12 @@
       const file = input.files && input.files[0];
       if (!file) return;
 
-      // Validasi kasar di sisi client (Worker tetap validasi ulang di
-      // PUT /photo — ini cuma supaya user dapat feedback instan tanpa
-      // perlu menunggu roundtrip network dulu).
       if (!file.type.startsWith("image/")) {
         alert("File yang dipilih bukan gambar. Pilih file PNG/JPG/WEBP/GIF.");
         input.value = "";
         return;
       }
-      const MAX_FILE_BYTES = 1.6 * 1024 * 1024; // ~1.6MB file asli -> ~2.2MB base64
+      const MAX_FILE_BYTES = 1.6 * 1024 * 1024;
       if (file.size > MAX_FILE_BYTES) {
         alert("Ukuran file terlalu besar. Pakai gambar di bawah ~1.5MB.");
         input.value = "";
@@ -760,15 +961,11 @@
     });
   }
 
-  // Update <img> pratinjau foto: prioritaskan draftPhotoDataUrl (foto
-  // baru yang baru dipilih, belum disimpan), lalu currentPhotoDataUrl
-  // (foto yang sedang live di server), lalu fallback ke foto default
-  // repo (assets/img/stickers.jpg) kalau keduanya kosong (KV belum
-  // pernah diisi foto sama sekali).
   function refreshFotoPreview() {
+    const resolvedSrc = draftPhotoDataUrl || currentPhotoDataUrl || "../assets/img/stickers.jpg";
+
     const img = document.getElementById("fotoAvatarPreview");
-    if (!img) return;
-    img.src = draftPhotoDataUrl || currentPhotoDataUrl || "../assets/img/stickers.jpg";
+    if (img) img.src = resolvedSrc;
 
     const filenameEl = document.getElementById("fotoAvatarFilename");
     if (filenameEl && !draftPhotoDataUrl) {
@@ -776,44 +973,29 @@
         ? "Pakai foto yang sedang tersimpan di server"
         : "Belum ada foto baru dipilih";
     }
+
+    // Chip avatar di topbar (background-image, bulat kecil).
+    const topbarAvatar = document.getElementById("topbarProfileAvatar");
+    if (topbarAvatar) topbarAvatar.style.backgroundImage = "url('" + resolvedSrc + "')";
+
+    // Avatar besar di halaman Profile.
+    const profileAvatarImg = document.getElementById("profileAvatarImg");
+    if (profileAvatarImg) profileAvatarImg.src = resolvedSrc;
   }
 
   // ==============================================================
-  // KATALOG PRODUK (shop) — tambah, edit field, hapus
+  // PRODUCT DISPLAY — tambah, edit field, hapus
   // ------------------------------------------------------------
-  // Terpisah dari form generator otomatis (produk bukan bagian dari
-  // content.js, disimpan di KV key "products" sendiri — lihat
-  // worker/src/index.js). Field nama & harga murni draft lokal (baru
-  // terkirim ke server saat klik Simpan/Apply Changes, sama seperti
-  // field teks lain) — TAPI field gambar BEDA: begitu file dipilih,
-  // langsung diupload ke R2 lewat POST /product-image (lihat
-  // uploadProductImage() di bawah), bukan ditunda sampai Simpan.
-  //
-  // Kenapa gambar diupload langsung (tidak ditunda)? Karena file gambar
-  // itu besar (bisa sampai beberapa MB) — kalau ditunda dan disimpan di
-  // memory sebagai base64 dulu (pola lama), draft jadi berat & lambat
-  // kalau ada banyak produk. Dengan upload langsung, yang disimpan di
-  // draftProducts cuma imageUrl (string pendek), draft tetap ringan
-  // berapa pun banyak produknya.
-  //
-  // KONSEKUENSI dari pola ini: kalau kamu upload foto baru untuk suatu
-  // produk lalu klik "Revert" SEBELUM sempat klik Simpan, file yang
-  // sudah terlanjur terupload ke R2 akan jadi FILE YATIM (tidak dipakai
-  // produk mana pun) — worker/src/index.js tidak melakukan pembersihan
-  // otomatis untuk kasus ini karena Worker tidak tahu draft mana yang
-  // "dibatalkan". Ini trade-off yang wajar (file yatim sesekali tidak
-  // masalah, dan tidak menambah kerumitan cleanup otomatis), TAPI setiap
-  // penggantian/penghapusan foto yang TERJADI (bukan dibatalkan) selalu
-  // diikuti pemanggilan DELETE /product-image untuk foto LAMA-nya (lihat
-  // removeImgBtn & removeBtn di bawah) — supaya file R2 TIDAK menumpuk
-  // dalam pemakaian normal sehari-hari.
+  // Semua fungsi fetch (uploadProductImage/deleteProductImage) TIDAK
+  // BERUBAH dari versi sebelumnya — endpoint, urutan request, dan
+  // trade-off (upload gambar langsung, bukan ditunda sampai Simpan)
+  // semuanya sama persis, lihat README2.md bagian 3.6-3.7 untuk kenapa.
+  // Yang berubah HANYA renderProductCard(): dulu list vertikal, sekarang
+  // grid card 1:1 (imageUrl sebagai cover foto persegi), mengikuti
+  // referensi desain.
   // ==============================================================
   const MAX_PRODUCT_IMAGE_FILE_BYTES = 5 * 1024 * 1024; // 5MB — samakan dengan MAX_PRODUCT_IMAGE_FILE_BYTES di worker/src/index.js
 
-  // Upload satu file gambar ke R2 lewat POST /product-image. Balas
-  // string imageUrl kalau berhasil, atau melempar Error dengan pesan
-  // yang sudah cocok ditampilkan langsung ke user (lewat alert) kalau
-  // gagal.
   async function uploadProductImage(file) {
     const token = getStoredToken();
     if (!token) {
@@ -834,11 +1016,6 @@
     return data.imageUrl;
   }
 
-  // Hapus satu file gambar produk dari R2 lewat DELETE /product-image.
-  // SENGAJA tidak melempar error kalau gagal (cuma dicatat ke console) —
-  // kegagalan hapus file lama TIDAK boleh menghalangi alur utama (ganti/
-  // hapus produk tetap harus jalan di sisi UI walau pembersihan R2-nya
-  // gagal; file yatim yang tersisa lebih baik daripada UI yang macet).
   async function deleteProductImage(imageUrl) {
     const token = getStoredToken();
     if (!token || !imageUrl) return;
@@ -868,21 +1045,14 @@
         });
         markUnsaved();
         renderProductsSection();
-        // Fokus ke field nama produk yang baru saja ditambah, supaya
-        // user bisa langsung ketik tanpa perlu klik dulu — produk baru
-        // selalu ditambah di akhir daftar (lihat renderProductsSection).
+        // Fokus ke field nama produk yang baru saja ditambah.
         const list = document.getElementById("productList");
-        const lastNameInput = list && list.querySelector(".product-item-card:last-child .field-input");
+        const lastNameInput = list && list.querySelector(".product-card:last-child .field-input");
         if (lastNameInput) lastNameInput.focus();
       });
     }
   }
 
-  // Id unik sederhana untuk produk baru — cukup untuk membedakan item di
-  // dalam satu array (dipakai key hapus/edit), bukan untuk keperluan
-  // keamanan apa pun. crypto.randomUUID tersedia di semua browser modern
-  // yang juga mendukung fitch/fetch dkk yang sudah dipakai dashboard ini,
-  // tapi tetap disediakan fallback sederhana untuk jaga-jaga.
   function generateProductId() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID();
@@ -890,12 +1060,6 @@
     return "produk-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
   }
 
-  // Bangun ulang SELURUH daftar kartu produk dari draftProducts. Dipanggil
-  // tiap kali draftProducts berubah bentuk (tambah/hapus item) — untuk
-  // edit field dalam SATU produk yang sudah ada, event listener input
-  // langsung menulis ke draftProducts tanpa perlu render ulang seluruh
-  // daftar (supaya fokus/kursor input tidak "lompat" tiap ketik satu
-  // huruf), lihat renderProductCard() di bawah.
   function renderProductsSection() {
     const list = document.getElementById("productList");
     if (!list) return;
@@ -903,8 +1067,8 @@
 
     if (draftProducts.length === 0) {
       const empty = document.createElement("p");
-      empty.className = "field-note";
-      empty.textContent = "Belum ada produk. Klik \"+ Tambah Produk\" di bawah untuk menambah produk pertama.";
+      empty.className = "product-empty-note";
+      empty.textContent = 'Belum ada produk. Klik "+ Tambah Produk" di atas untuk menambah produk pertama.';
       list.appendChild(empty);
     } else {
       draftProducts.forEach((product, index) => {
@@ -912,37 +1076,52 @@
       });
     }
 
+    const badge = document.getElementById("productCountBadge");
+    if (badge) badge.textContent = String(draftProducts.length);
+
+    const statEl = document.getElementById("statProductCount");
+    if (statEl) statEl.textContent = String(draftProducts.length);
+
     refreshPreview();
   }
 
+  // Bangun satu kartu grid produk: foto persegi (dengan tombol ganti/
+  // hapus foto mengambang di bawahnya), lalu field nama & harga.
+  // Struktur DOM sengaja mengikuti class CSS .product-card-* di
+  // admin.css (lihat bagian PRODUCT DISPLAY PAGE) — beda total dari
+  // .array-item-card/.product-item-card versi list lama.
   function renderProductCard(product, index) {
     const card = document.createElement("div");
-    card.className = "array-item-card product-item-card";
+    card.className = "product-card";
 
+    // ---- Header: nomor urut + tombol hapus produk ----
     const header = document.createElement("div");
-    header.className = "product-item-header";
+    header.className = "product-card-header";
 
-    const label = document.createElement("div");
-    label.className = "array-item-label";
-    label.textContent = "#" + (index + 1) + (product.name ? " — " + product.name : " — (belum ada nama)");
-    header.appendChild(label);
+    const indexLabel = document.createElement("span");
+    indexLabel.className = "product-card-index";
+    indexLabel.textContent = "#" + (index + 1);
+    header.appendChild(indexLabel);
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "btn-remove-product";
     removeBtn.title = "Hapus produk ini";
     removeBtn.setAttribute("aria-label", "Hapus produk ini");
-    removeBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"></path></svg> Hapus';
+    removeBtn.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"></path></svg> Hapus';
     removeBtn.addEventListener("click", () => {
       const hasContent = product.name.trim() || product.price > 0 || product.imageUrl;
-      if (hasContent && !confirm("Hapus produk \"" + (product.name || "(tanpa nama)") + "\" dari katalog? Perubahan ini baru permanen setelah kamu klik Simpan/Apply Changes.")) {
+      if (
+        hasContent &&
+        !confirm(
+          'Hapus produk "' +
+            (product.name || "(tanpa nama)") +
+            '" dari katalog? Perubahan ini baru permanen setelah kamu klik Simpan/Apply Changes.'
+        )
+      ) {
         return;
       }
-      // Hapus juga file gambarnya dari R2 kalau ada, supaya tidak
-      // menumpuk jadi sampah (lihat deleteProductImage()) — dijalankan
-      // "fire and forget" (tidak di-await di sini), UI tetap responsif
-      // langsung menghapus kartu produk dari daftar tanpa menunggu
-      // konfirmasi network dulu.
       if (product.imageUrl) {
         deleteProductImage(product.imageUrl);
       }
@@ -951,51 +1130,35 @@
       renderProductsSection();
     });
     header.appendChild(removeBtn);
-
     card.appendChild(header);
 
-    // ---- Field: gambar produk ----
-    const imgField = document.createElement("div");
-    imgField.className = "field";
-    const imgLabel = document.createElement("label");
-    imgLabel.className = "field-label";
-    imgLabel.textContent = "Foto produk";
-    imgField.appendChild(imgLabel);
-
+    // ---- Foto produk (persegi, tombol ganti foto mengambang) ----
     const imgWrap = document.createElement("div");
-    imgWrap.className = "field-image field-image-square";
+    imgWrap.className = "product-card-image-wrap";
 
-    const imgPreview = document.createElement("img");
-    imgPreview.className = "field-image-preview field-image-preview-square";
-    imgPreview.alt = "Pratinjau foto produk";
-    imgPreview.src = product.imageUrl || "";
-    imgPreview.style.display = product.imageUrl ? "" : "none";
-
-    const imgPlaceholder = document.createElement("div");
-    imgPlaceholder.className = "field-image-placeholder";
-    imgPlaceholder.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 7h18l-1.5 12.5a2 2 0 01-2 1.5H6.5a2 2 0 01-2-1.5L3 7z"/><path d="M8 7V5a4 4 0 018 0v2"/></svg>';
-    imgPlaceholder.style.display = product.imageUrl ? "none" : "flex";
-
-    imgWrap.appendChild(imgPreview);
-    imgWrap.appendChild(imgPlaceholder);
-
-    const imgControls = document.createElement("div");
-    imgControls.className = "field-image-controls";
-
-    const imgPickBtn = document.createElement("button");
-    imgPickBtn.type = "button";
-    imgPickBtn.className = "btn btn-outline";
-    imgPickBtn.textContent = "Pilih Foto...";
-
-    const imgFilename = document.createElement("span");
-    imgFilename.className = "field-image-filename";
-    imgFilename.textContent = product.imageUrl ? "Foto sudah diupload" : "Belum ada foto";
+    if (product.imageUrl) {
+      const imgPreview = document.createElement("img");
+      imgPreview.className = "product-card-image";
+      imgPreview.alt = "Pratinjau foto produk";
+      imgPreview.src = product.imageUrl;
+      imgWrap.appendChild(imgPreview);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "product-card-image-placeholder";
+      placeholder.innerHTML =
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 7h18l-1.5 12.5a2 2 0 01-2 1.5H6.5a2 2 0 01-2-1.5L3 7z"/><path d="M8 7V5a4 4 0 018 0v2"/></svg>';
+      imgWrap.appendChild(placeholder);
+    }
 
     const imgInput = document.createElement("input");
     imgInput.type = "file";
     imgInput.accept = "image/png,image/jpeg,image/webp,image/gif";
     imgInput.className = "field-image-input";
 
+    const imgPickBtn = document.createElement("button");
+    imgPickBtn.type = "button";
+    imgPickBtn.className = "product-card-image-btn";
+    imgPickBtn.textContent = product.imageUrl ? "Ganti Foto" : "Pilih Foto...";
     imgPickBtn.addEventListener("click", () => imgInput.click());
 
     imgInput.addEventListener("change", () => {
@@ -1014,24 +1177,14 @@
       }
 
       const oldImageUrl = product.imageUrl;
-
-      // Nonaktifkan tombol pilih foto + tampilkan status "Mengupload..."
-      // selama request berlangsung, supaya jelas ini butuh waktu (upload
-      // beberapa MB tidak instan seperti FileReader base64 lokal dulu)
-      // dan mencegah user memilih file lain di tengah upload yang sedang
-      // berjalan.
       imgPickBtn.disabled = true;
-      imgFilename.textContent = "Mengupload...";
+      imgPickBtn.textContent = "Mengupload...";
 
       uploadProductImage(file)
         .then((imageUrl) => {
           product.imageUrl = imageUrl;
           markUnsaved();
           renderProductsSection();
-          // Foto LAMA (kalau ada) sudah tidak dipakai produk ini lagi
-          // setelah diganti foto baru -> hapus dari R2 supaya tidak
-          // menumpuk. Dijalankan setelah render supaya UI (yang sudah
-          // menampilkan foto baru) tidak menunggu proses cleanup ini.
           if (oldImageUrl) {
             deleteProductImage(oldImageUrl);
           }
@@ -1039,21 +1192,21 @@
         .catch((err) => {
           alert(err.message || "Gagal mengupload gambar. Coba lagi.");
           imgPickBtn.disabled = false;
-          imgFilename.textContent = product.imageUrl ? "Foto sudah diupload" : "Belum ada foto";
+          imgPickBtn.textContent = product.imageUrl ? "Ganti Foto" : "Pilih Foto...";
         })
         .finally(() => {
           imgInput.value = "";
         });
     });
 
-    imgControls.appendChild(imgPickBtn);
-    imgControls.appendChild(imgFilename);
-    imgControls.appendChild(imgInput);
+    imgWrap.appendChild(imgPickBtn);
+    imgWrap.appendChild(imgInput);
+    card.appendChild(imgWrap);
 
     if (product.imageUrl) {
       const removeImgBtn = document.createElement("button");
       removeImgBtn.type = "button";
-      removeImgBtn.className = "btn-remove-product-image";
+      removeImgBtn.className = "product-card-image-remove";
       removeImgBtn.textContent = "Hapus foto ini";
       removeImgBtn.addEventListener("click", () => {
         const oldImageUrl = product.imageUrl;
@@ -1062,27 +1215,22 @@
         renderProductsSection();
         deleteProductImage(oldImageUrl);
       });
-      imgControls.appendChild(removeImgBtn);
+      card.appendChild(removeImgBtn);
     }
-
-    imgWrap.appendChild(imgControls);
-    imgField.appendChild(imgWrap);
-    card.appendChild(imgField);
 
     // ---- Field: nama produk ----
     const nameField = document.createElement("div");
-    nameField.className = "field";
+    nameField.className = "product-card-field";
     const nameLabel = document.createElement("label");
-    nameLabel.className = "field-label";
+    nameLabel.className = "product-card-field-label";
     nameLabel.textContent = "Nama produk";
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "field-input";
     nameInput.value = product.name;
-    nameInput.placeholder = "Misal: Sample Pack — Prawirotaman Nights Vol. 1";
+    nameInput.placeholder = "Misal: Sample Pack Vol. 1";
     nameInput.addEventListener("input", () => {
       product.name = nameInput.value;
-      label.textContent = "#" + (index + 1) + (product.name ? " — " + product.name : " — (belum ada nama)");
       markUnsaved();
       refreshPreview();
     });
@@ -1092,9 +1240,9 @@
 
     // ---- Field: harga produk ----
     const priceField = document.createElement("div");
-    priceField.className = "field";
+    priceField.className = "product-card-field";
     const priceLabel = document.createElement("label");
-    priceLabel.className = "field-label";
+    priceLabel.className = "product-card-field-label";
     priceLabel.textContent = "Harga (Rp)";
     const priceInput = document.createElement("input");
     priceInput.type = "number";
@@ -1116,15 +1264,16 @@
   }
 
   // ------------------------------------------------------------
-  // Preview ringan yang menampilkan beberapa field paling terlihat
-  // (bukan render ulang seluruh halaman index.html — itu di luar
-  // cakupan dashboard ini, dan menduplikasi seluruh main.js di sini
-  // hanya akan menambah risiko preview "beda" dari situs aslinya).
-  // Preview ini membantu memastikan field terisi seperti yang
-  // dimaksud sebelum di-download.
-  // ==============================================================
+  // Preview ringan (kolom kanan halaman UI Settings). Logika sama
+  // persis dengan versi sebelumnya, MINUS blok preview produk — produk
+  // sekarang punya halaman sendiri (Product Display) dengan grid card
+  // penuh, jadi ringkasan kecil di sini sudah tidak diperlukan lagi
+  // (dan #previewProducts tidak lagi ada di admin/index.html).
+  // ------------------------------------------------------------
   function refreshPreview() {
     const c = draftContent;
+    if (!c) return;
+
     setText("previewPageTitle", c.meta.pageTitle);
     setText("previewHeroHeading", stripTags(c.hero.heading));
     setText("previewHeroSub", c.hero.subheading);
@@ -1158,30 +1307,7 @@
     setText("previewEmail", c.kontak.email);
     setText("previewFooterTagline", c.footer.tagline);
 
-    const productsList = document.getElementById("previewProducts");
-    if (productsList) {
-      productsList.innerHTML = "";
-      if (draftProducts.length === 0) {
-        const empty = document.createElement("p");
-        empty.className = "field-note";
-        empty.style.margin = "0";
-        empty.textContent = "Katalog masih kosong.";
-        productsList.appendChild(empty);
-      } else {
-        draftProducts.forEach((p) => {
-          const row = document.createElement("div");
-          row.className = "preview-product-row";
-          const thumbHTML = p.imageUrl
-            ? '<img src="' + p.imageUrl + '" alt="" class="preview-product-thumb" />'
-            : '<span class="preview-product-thumb preview-product-thumb-empty"></span>';
-          row.innerHTML =
-            thumbHTML +
-            '<span class="preview-product-name">' + escapeHtml(p.name || "(belum ada nama)") + "</span>" +
-            '<span class="preview-product-price">Rp' + (Number(p.price) || 0).toLocaleString("id-ID") + "</span>";
-          productsList.appendChild(row);
-        });
-      }
-    }
+    refreshOverviewStats();
   }
 
   function setText(id, text) {
@@ -1203,70 +1329,450 @@
   }
 
   // ==============================================================
-  // SIMPAN — PUT /content (+ PUT /photo kalau ada foto baru, + PUT
-  // /products kalau ada perubahan produk)
+  // OVERVIEW PAGE — ringkasan konten
   // ------------------------------------------------------------
-  // Ini pengganti alur "unduh content.js lalu upload manual" yang lama.
-  // Dipanggil oleh DUA tombol yang perilakunya identik: tombol "Simpan
-  // Perubahan" di bar bawah, dan "Apply Changes" di topbar kanan atas —
-  // user secara eksplisit minta keduanya ada, jadi keduanya disediakan,
-  // tapi tidak ada gunanya duplikasi logika, jadi keduanya memanggil
-  // saveAll() yang sama persis.
-  //
-  // PUT /products SELALU dipanggil (bukan cuma kalau ada perubahan
-  // spesifik) — beda dengan /photo yang cuma dikirim kalau
-  // draftPhotoDataUrl terisi. Alasannya: field gambar produk sudah
-  // TERKIRIM ke R2 duluan (lihat uploadProductImage(), dipanggil saat
-  // file dipilih, bukan saat Simpan), jadi tidak ada cara murah untuk
-  // tahu "apakah draftProducts benar-benar berubah dari currentProducts
-  // di server" tanpa nge-diff seluruh array — lebih sederhana & aman
-  // untuk selalu kirim ulang draftProducts LENGKAP setiap Simpan, sama
-  // seperti /content.
+  // Angka murni dihitung dari draftContent/draftProducts yang SUDAH
+  // ada di memori (tidak ada fetch tambahan) — jadi ikut update
+  // langsung setiap kali kamu ubah field di UI Settings atau
+  // tambah/hapus produk di Product Display, tanpa perlu pindah
+  // halaman dulu.
   // ==============================================================
-  function wireSaveButtons() {
-    const bottomBtn = document.getElementById("downloadBtn");
-    if (bottomBtn) bottomBtn.addEventListener("click", saveAll);
-    // applyChangesBtn di-wire di wireTopbarButtons() (bersama revertBtn),
-    // memanggil saveAll() yang sama.
+  function refreshOverviewStats() {
+    const c = draftContent;
+    if (!c) return;
+    setText("statReleaseCount", String((c.karya && c.karya.releases && c.karya.releases.length) || 0));
+    setText("statGenreCount", String((c.logoBar && c.logoBar.items && c.logoBar.items.length) || 0));
+    setText("statToolCount", String((c.alat && c.alat.items && c.alat.items.length) || 0));
+    setText("statProductCount", String(draftProducts.length));
+  }
+
+  // Cek cepat apakah Worker bisa dihubungi (dipakai untuk titik status
+  // hijau/kuning/merah di kartu "Status Server"). GET /content dipilih
+  // sebagai endpoint cek karena tidak butuh token (publicly readable,
+  // lihat README2.md bagian 3.2) — jadi ini murni cek konektivitas,
+  // BUKAN pengecekan ulang validitas token (itu sudah ditangani terpisah
+  // oleh verifyToken() di alur login/auto-login).
+  async function checkWorkerStatus() {
+    const dot = document.getElementById("ovWorkerDot");
+    const label = document.getElementById("ovWorkerLabel");
+    if (!dot || !label) return;
+
+    dot.setAttribute("data-state", "checking");
+    label.textContent = "Mengecek koneksi Worker…";
+
+    try {
+      const res = await fetch(AUTH_API_BASE + "/content", { method: "GET" });
+      if (res.ok) {
+        dot.setAttribute("data-state", "ok");
+        label.textContent = "Worker & Cloudflare KV terhubung normal";
+      } else {
+        dot.setAttribute("data-state", "error");
+        label.textContent = "Worker merespons tapi ada masalah (HTTP " + res.status + ")";
+      }
+    } catch {
+      dot.setAttribute("data-state", "error");
+      label.textContent = "Tidak bisa menghubungi Worker. Cek koneksi internet.";
+    }
+  }
+
+  // ==============================================================
+  // OVERVIEW PAGE — jam, sapaan, cuaca
+  // ------------------------------------------------------------
+  // Deteksi zona waktu (WIB/WITA/WIT) memakai pola yang SAMA PERSIS
+  // dengan assets/js/hero-greeting.js di situs utama (detectZonaWaktu
+  // di sana) — supaya dashboard dan situs publik selalu menampilkan
+  // sapaan/jam yang konsisten untuk browser yang sama, alih-alih dua
+  // logika terpisah yang bisa saling berbeda kalau salah satu diubah
+  // di kemudian hari tanpa ubah yang lain.
+  // ==============================================================
+  function detectZonaWaktuOverview() {
+    const fallback = { label: "WIB", offset: 7 };
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      const petaWITA = ["Asia/Makassar", "Asia/Ujung_Pandang", "Asia/Denpasar", "Asia/Kuching"];
+      const petaWIT = ["Asia/Jayapura"];
+      const petaWIB = ["Asia/Jakarta", "Asia/Pontianak"];
+
+      if (petaWITA.indexOf(tz) !== -1) return { label: "WITA", offset: 8 };
+      if (petaWIT.indexOf(tz) !== -1) return { label: "WIT", offset: 9 };
+      if (petaWIB.indexOf(tz) !== -1) return { label: "WIB", offset: 7 };
+
+      const offsetJam = -new Date().getTimezoneOffset() / 60;
+      if (offsetJam === 8) return { label: "WITA", offset: 8 };
+      if (offsetJam === 9) return { label: "WIT", offset: 9 };
+      if (offsetJam === 7) return { label: "WIB", offset: 7 };
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function greetingForHour(hour) {
+    if (hour >= 4 && hour < 11) return "Selamat pagi";
+    if (hour >= 11 && hour < 15) return "Selamat siang";
+    if (hour >= 15 && hour < 18) return "Selamat sore";
+    return "Selamat malam";
+  }
+
+  const HARI_ID = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+  const BULAN_ID = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+  ];
+
+  function startOverviewClock() {
+    if (overviewClockInterval) return; // sudah jalan, jangan bikin interval dobel
+    tickOverviewClock();
+    overviewClockInterval = window.setInterval(tickOverviewClock, 1000);
+  }
+
+  function stopOverviewClock() {
+    if (overviewClockInterval) {
+      window.clearInterval(overviewClockInterval);
+      overviewClockInterval = null;
+    }
+  }
+
+  function tickOverviewClock() {
+    const zona = detectZonaWaktuOverview();
+    const now = new Date();
+
+    // Hitung waktu di zona WIB/WITA/WIT terdeteksi dengan basis UTC,
+    // BUKAN pakai toLocaleString(timeZone: ...) — supaya perilakunya
+    // konsisten dengan hero-greeting.js di situs utama (yang juga
+    // menghitung manual dari offset, bukan API locale yang bisa beda
+    // dukungannya antar browser).
+    const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+    const zonedDate = new Date(utcMs + zona.offset * 3600000);
+
+    const h = zonedDate.getHours();
+    const m = zonedDate.getMinutes();
+    const hh = String(h).padStart(2, "0");
+    const mm = String(m).padStart(2, "0");
+
+    setText("ovClockTime", hh + ":" + mm);
+    setText("ovClockZone", zona.label);
+
+    const greetingHeadingEl = document.getElementById("ovGreetingHeading");
+    const greetingLabelEl = document.getElementById("ovGreetingLabel");
+    const displayName = document.getElementById("loggedInAs") ? document.getElementById("loggedInAs").textContent : "";
+    if (greetingLabelEl) greetingLabelEl.textContent = greetingForHour(h);
+    if (greetingHeadingEl) {
+      greetingHeadingEl.textContent = displayName ? "Halo, " + displayName + "!" : "Halo!";
+    }
+
+    const dateStr =
+      HARI_ID[zonedDate.getDay()] + ", " + zonedDate.getDate() + " " + BULAN_ID[zonedDate.getMonth()] + " " + zonedDate.getFullYear();
+    setText("ovDate", dateStr);
+  }
+
+  // ==============================================================
+  // OVERVIEW PAGE — lokasi pengakses (IP geolocation) + peta + cuaca
+  // ------------------------------------------------------------
+  // Layanan dipakai:
+  //   - ipapi.co/json/  : IP publik + estimasi kota/negara + lat/lon.
+  //     Gratis untuk pemakaian ringan, TANPA API key, dan mendukung
+  //     CORS langsung dari browser (makanya bisa dipanggil dari sini,
+  //     bukan dari sisi Worker).
+  //   - Open-Meteo       : cuaca saat ini berdasarkan lat/lon yang sama
+  //     dari ipapi.co, juga gratis & tanpa API key.
+  //   - Leaflet + tile OpenStreetMap : render peta, sepenuhnya open-
+  //     source, tanpa API key (beda dengan Google Maps).
+  //
+  // SEKALI PER SESI: fetch ini hanya dijalankan sekali setiap dashboard
+  // dibuka (guard hasFetchedVisitorGeo), bukan tiap kali halaman
+  // Overview dikunjungi ulang dalam sesi yang sama — supaya tidak
+  // membebani ipapi.co dengan request berulang tanpa alasan tiap kali
+  // kamu pindah-pindah halaman dashboard.
+  //
+  // KETERBATASAN YANG PERLU DISADARI (juga sudah dijelaskan di teks UI,
+  // #page-overview -> .ov-map-note): ini estimasi lokasi dari infrastruktur
+  // jaringan (IP), BUKAN GPS presisi — bisa meleset sampai level
+  // kota/wilayah, apalagi kalau memakai VPN. Tidak ada riwayat/log
+  // disimpan di server manapun; murni ditampilkan langsung di
+  // browser untuk sesi ini saja.
+  // ==============================================================
+  function ensureLeafletMap() {
+    if (leafletMap || typeof L === "undefined") return;
+    const container = document.getElementById("ovMapContainer");
+    if (!container) return;
+
+    leafletMap = L.map(container, {
+      zoomControl: true,
+      attributionControl: true,
+      scrollWheelZoom: false, // biar scroll halaman dashboard tidak "kejebak" ter-zoom peta
+    }).setView([-7.801, 110.364], 11); // fallback awal: Yogyakarta, sebelum lokasi asli ketemu
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+    }).addTo(leafletMap);
+
+    window.setTimeout(() => leafletMap.invalidateSize(), 100);
+  }
+
+  async function fetchVisitorGeo() {
+    if (hasFetchedVisitorGeo) return;
+    hasFetchedVisitorGeo = true;
+
+    const badge = document.getElementById("ovMapBadge");
+    if (badge) {
+      badge.textContent = "Mendeteksi…";
+      badge.removeAttribute("data-state");
+    }
+
+    let geo = null;
+    try {
+      const res = await fetch("https://ipapi.co/json/");
+      const data = await res.json().catch(() => null);
+      if (data && !data.error && typeof data.latitude === "number" && typeof data.longitude === "number") {
+        geo = data;
+      }
+    } catch {
+      geo = null;
+    }
+
+    if (!geo) {
+      if (badge) {
+        badge.textContent = "Tidak terdeteksi";
+        badge.setAttribute("data-state", "error");
+      }
+      setText("ovLoc", "");
+      const locWrap = document.getElementById("ovLoc");
+      if (locWrap) {
+        locWrap.innerHTML =
+          '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 6-9 12-9 12s-9-6-9-12a9 9 0 0118 0z"></path><circle cx="12" cy="10" r="3"></circle></svg><span>Lokasi tidak terdeteksi</span>';
+      }
+      fetchWeather(null);
+      return;
+    }
+
+    const cityLabel = [geo.city, geo.region, geo.country_name].filter(Boolean).join(", ");
+
+    if (badge) {
+      badge.textContent = geo.ip ? "IP " + geo.ip : "Terdeteksi";
+      badge.setAttribute("data-state", "ok");
+    }
+
+    const locWrap = document.getElementById("ovLoc");
+    if (locWrap) {
+      locWrap.innerHTML =
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 6-9 12-9 12s-9-6-9-12a9 9 0 0118 0z"></path><circle cx="12" cy="10" r="3"></circle></svg><span>' +
+        escapeHtml(cityLabel || "Lokasi tidak diketahui") +
+        "</span>";
+    }
+
+    if (leafletMap) {
+      leafletMap.setView([geo.latitude, geo.longitude], 12);
+      if (leafletMarker) {
+        leafletMarker.setLatLng([geo.latitude, geo.longitude]);
+      } else {
+        leafletMarker = L.marker([geo.latitude, geo.longitude]).addTo(leafletMap);
+      }
+      leafletMarker.bindPopup(escapeHtml(cityLabel || "Lokasi pengakses") + (geo.ip ? "<br>IP: " + escapeHtml(geo.ip) : ""));
+      window.setTimeout(() => leafletMap.invalidateSize(), 150);
+    }
+
+    fetchWeather({ lat: geo.latitude, lon: geo.longitude });
+  }
+
+  const WEATHER_CODE_MAP = {
+    0: { icon: "☀️", desc: "Cerah" },
+    1: { icon: "🌤️", desc: "Cerah berawan sebagian" },
+    2: { icon: "⛅", desc: "Berawan sebagian" },
+    3: { icon: "☁️", desc: "Mendung" },
+    45: { icon: "🌫️", desc: "Berkabut" },
+    48: { icon: "🌫️", desc: "Kabut es" },
+    51: { icon: "🌦️", desc: "Gerimis ringan" },
+    53: { icon: "🌦️", desc: "Gerimis sedang" },
+    55: { icon: "🌦️", desc: "Gerimis lebat" },
+    61: { icon: "🌧️", desc: "Hujan ringan" },
+    63: { icon: "🌧️", desc: "Hujan sedang" },
+    65: { icon: "🌧️", desc: "Hujan lebat" },
+    71: { icon: "🌨️", desc: "Salju ringan" },
+    80: { icon: "🌧️", desc: "Hujan lokal ringan" },
+    81: { icon: "🌧️", desc: "Hujan lokal sedang" },
+    82: { icon: "⛈️", desc: "Hujan lokal lebat" },
+    95: { icon: "⛈️", desc: "Badai petir" },
+    96: { icon: "⛈️", desc: "Badai petir + hujan es" },
+    99: { icon: "⛈️", desc: "Badai petir hebat" },
+  };
+
+  async function fetchWeather(coords) {
+    const iconEl = document.getElementById("ovWeatherIcon");
+    const tempEl = document.getElementById("ovWeatherTemp");
+    const descEl = document.getElementById("ovWeatherDesc");
+
+    // Fallback koordinat: Yogyakarta (basis Rafael), dipakai kalau
+    // deteksi IP di atas gagal total — supaya kartu cuaca tetap
+    // menampilkan sesuatu yang relevan alih-alih kosong.
+    const lat = coords ? coords.lat : -7.801;
+    const lon = coords ? coords.lon : 110.364;
+
+    try {
+      const url =
+        "https://api.open-meteo.com/v1/forecast?latitude=" +
+        lat +
+        "&longitude=" +
+        lon +
+        "&current=temperature_2m,weather_code&timezone=auto";
+      const res = await fetch(url);
+      const data = await res.json().catch(() => null);
+
+      if (data && data.current && typeof data.current.temperature_2m === "number") {
+        const code = data.current.weather_code;
+        const info = WEATHER_CODE_MAP[code] || { icon: "🌡️", desc: "Cuaca" };
+        if (iconEl) iconEl.textContent = info.icon;
+        if (tempEl) tempEl.textContent = Math.round(data.current.temperature_2m) + "°C";
+        if (descEl) descEl.textContent = info.desc;
+      } else {
+        throw new Error("bad weather payload");
+      }
+    } catch {
+      if (iconEl) iconEl.textContent = "—";
+      if (tempEl) tempEl.textContent = "—";
+      if (descEl) descEl.textContent = "Cuaca tidak tersedia";
+    }
+  }
+
+  // ==============================================================
+  // PROFILE PAGE
+  // ------------------------------------------------------------
+  // Lihat catatan panjang di header file ini ("SOAL HALAMAN PROFILE")
+  // untuk kenapa halaman ini menampilkan SATU sesi akun tunggal, bukan
+  // daftar banyak user. Data yang ditampilkan di sini:
+  //   - Username : dari token JWT (via /verify), sama dengan yang tampil
+  //     di chip topbar.
+  //   - Waktu masuk : dicatat di klien saat login sukses (storeLoginTime
+  //     di wireLoginForm), BUKAN dari server (Worker tidak menyimpan
+  //     riwayat waktu login).
+  //   - Sesi berakhir sekitar : Waktu masuk + TOKEN_LIFETIME_MS (24 jam,
+  //     lihat README2.md bagian 5.1) — estimasi klien, validitas
+  //     SEBENARNYA tetap ditentukan server tiap kali /verify dipanggil.
+  // ==============================================================
+  function refreshProfilePage(username) {
+    setText("profileName", username || "—");
+    setText("profileUsername", username || "—");
+
+    const loginTime = getStoredLoginTime();
+    if (loginTime) {
+      setText("profileLoginTime", formatDateTimeId(new Date(loginTime)));
+      setText("profileExpiry", formatDateTimeId(new Date(loginTime + TOKEN_LIFETIME_MS)) + " (estimasi)");
+    } else {
+      // Kasus ini terjadi saat AUTO-LOGIN dari sessionStorage yang
+      // tersisa dari sesi sebelumnya, sebelum LOGIN_TIME_STORAGE_KEY
+      // ada (mis. sesi lama sebelum fitur Profile ini ditambahkan) —
+      // tampilkan keterangan jujur alih-alih tanggal palsu.
+      setText("profileLoginTime", "Tidak tercatat (sesi berjalan sebelum fitur ini aktif)");
+      setText("profileExpiry", "Tidak diketahui — coba login ulang untuk mengaktifkan pencatatan ini");
+    }
+  }
+
+  function formatDateTimeId(date) {
+    const hh = String(date.getHours()).padStart(2, "0");
+    const mm = String(date.getMinutes()).padStart(2, "0");
+    return (
+      HARI_ID[date.getDay()] + ", " + date.getDate() + " " + BULAN_ID[date.getMonth()] + " " + date.getFullYear() + " " + hh + ":" + mm
+    );
+  }
+
+  // ==============================================================
+  // UNSAVED STATE TRACKING
+  // ------------------------------------------------------------
+  // Satu sumber kebenaran (body.has-unsaved-changes) dipakai oleh
+  // BANYAK indikator visual sekaligus: titik kuning di topbar
+  // (.unsaved-dot), enable/disable tombol Apply Changes & Revert di
+  // topbar, dan tombol Simpan Perubahan di download-bar bawah — semua
+  // ikut ter-toggle otomatis lewat CSS/JS begitu class ini berubah,
+  // supaya tidak ada dua "tombol simpan" yang bisa beda status.
+  // ==============================================================
+  function markUnsaved() {
+    document.body.classList.add("has-unsaved-changes");
+    const applyBtn = document.getElementById("applyChangesBtn");
+    const revertBtn = document.getElementById("revertBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    if (applyBtn) applyBtn.disabled = false;
+    if (revertBtn) revertBtn.disabled = false;
+    if (downloadBtn) downloadBtn.disabled = false;
+    setSaveStatus("", "");
+  }
+
+  function clearUnsavedState() {
+    document.body.classList.remove("has-unsaved-changes");
+    const applyBtn = document.getElementById("applyChangesBtn");
+    const revertBtn = document.getElementById("revertBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    if (applyBtn) applyBtn.disabled = true;
+    if (revertBtn) revertBtn.disabled = true;
+    if (downloadBtn) downloadBtn.disabled = true;
+  }
+
+  function setSaveStatus(text, state) {
+    const topbarStatus = document.getElementById("topbarSaveStatus");
+    if (topbarStatus) {
+      topbarStatus.textContent = text;
+      if (state) {
+        topbarStatus.setAttribute("data-state", state);
+      } else {
+        topbarStatus.removeAttribute("data-state");
+      }
+    }
+    const downloadStatus = document.getElementById("downloadStatus");
+    if (downloadStatus) {
+      downloadStatus.textContent = text;
+      downloadStatus.classList.toggle("is-visible", Boolean(text));
+    }
+  }
+
+  // ==============================================================
+  // TOPBAR BUTTONS: Apply Changes / Revert (+ tombol Simpan Perubahan
+  // di download-bar bawah, keduanya memanggil fungsi yang sama)
+  // ==============================================================
+  function wireTopbarButtons() {
+    const applyBtn = document.getElementById("applyChangesBtn");
+    const revertBtn = document.getElementById("revertBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    if (applyBtn) applyBtn.addEventListener("click", saveAll);
+    if (downloadBtn) downloadBtn.addEventListener("click", saveAll);
+    if (revertBtn) revertBtn.addEventListener("click", revertAll);
   }
 
   async function saveAll() {
-    if (isSaving) return; // guard klik dobel
+    if (isSaving) return;
+    const token = getStoredToken();
+    if (!token) {
+      setSaveStatus("Sesi berakhir, silakan login ulang.", "error");
+      doLogout();
+      return;
+    }
+
     isSaving = true;
-
-    const bottomBtn = document.getElementById("downloadBtn");
     const applyBtn = document.getElementById("applyChangesBtn");
-    const revertBtn = document.getElementById("revertBtn");
-    const status = document.getElementById("downloadStatus");
-
-    setButtonLoading(bottomBtn, true, "Menyimpan...");
-    if (applyBtn) applyBtn.disabled = true;
-    if (revertBtn) revertBtn.disabled = true;
-    setTopbarSaveStatus("saving", "Menyimpan...");
+    const downloadBtn = document.getElementById("downloadBtn");
+    setButtonLoading(applyBtn, true, "Menyimpan...");
+    setButtonLoading(downloadBtn, true, "Menyimpan...");
+    setSaveStatus("Menyimpan perubahan...", "saving");
 
     try {
-      const token = getStoredToken();
-      if (!token) {
-        throw new Error("Sesi login sudah berakhir. Silakan login ulang lalu coba simpan kembali.");
-      }
-
+      // PUT /content — selalu dikirim (teks selalu dianggap "milik"
+      // draft yang sedang aktif, walau tidak setiap section berubah).
       const contentRes = await fetch(AUTH_API_BASE + "/content", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
-        body: JSON.stringify(draftContent),
+        body: JSON.stringify({ content: draftContent }),
       });
       const contentData = await contentRes.json().catch(() => null);
       if (!contentRes.ok || !contentData || !contentData.success) {
-        throw new Error((contentData && contentData.error) || "Gagal menyimpan teks ke server.");
+        throw new Error((contentData && contentData.error) || "Gagal menyimpan teks (PUT /content).");
       }
 
-      // Foto cuma dikirim kalau user benar-benar memilih foto baru di
-      // sesi edit ini (draftPhotoDataUrl terisi) — kalau tidak, foto yang
-      // sedang live di server dibiarkan apa adanya, TIDAK ditimpa dengan
-      // apa pun (mis. tidak "direset" ke fallback bawaan).
+      // PUT /photo — HANYA dikirim kalau ada foto baru dipilih di sesi
+      // ini (draftPhotoDataUrl tidak null). Kalau tidak diganti, foto
+      // lama di server dibiarkan apa adanya (tidak perlu re-upload).
       if (draftPhotoDataUrl) {
         const photoRes = await fetch(AUTH_API_BASE + "/photo", {
           method: "PUT",
@@ -1278,12 +1784,15 @@
         });
         const photoData = await photoRes.json().catch(() => null);
         if (!photoRes.ok || !photoData || !photoData.success) {
-          throw new Error((photoData && photoData.error) || "Gagal menyimpan foto ke server.");
+          throw new Error((photoData && photoData.error) || "Gagal menyimpan foto (PUT /photo).");
         }
         currentPhotoDataUrl = draftPhotoDataUrl;
         draftPhotoDataUrl = null;
       }
 
+      // PUT /products — selalu dikirim juga (sama alasannya dengan
+      // /content: draftProducts adalah satu-satunya sumber kebenaran
+      // untuk katalog yang sedang diedit).
       const productsRes = await fetch(AUTH_API_BASE + "/products", {
         method: "PUT",
         headers: {
@@ -1294,69 +1803,42 @@
       });
       const productsData = await productsRes.json().catch(() => null);
       if (!productsRes.ok || !productsData || !productsData.success) {
-        throw new Error((productsData && productsData.error) || "Gagal menyimpan katalog produk ke server.");
+        throw new Error((productsData && productsData.error) || "Gagal menyimpan produk (PUT /products).");
       }
 
       clearUnsavedState();
-      setTopbarSaveStatus("saved", "Tersimpan");
-
-      if (status) {
-        status.textContent =
-          "Tersimpan. Situs live sudah menampilkan perubahan ini (refresh tab situs untuk melihatnya).";
-        status.classList.add("is-visible");
-        window.clearTimeout(status._hideTimer);
-        status._hideTimer = window.setTimeout(() => {
-          status.classList.remove("is-visible");
-        }, 8000);
-      }
+      refreshFotoPreview();
+      setSaveStatus("Tersimpan — situs live sudah diperbarui.", "saved");
+      window.setTimeout(() => setSaveStatus("", ""), 4000);
     } catch (err) {
-      setTopbarSaveStatus("error", "Gagal menyimpan");
-      if (status) {
-        status.textContent =
-          "Gagal menyimpan: " + (err && err.message ? err.message : String(err));
-        status.classList.add("is-visible");
-        window.clearTimeout(status._hideTimer);
-        status._hideTimer = window.setTimeout(() => {
-          status.classList.remove("is-visible");
-        }, 8000);
-      }
+      setSaveStatus(err.message || "Gagal menyimpan. Coba lagi.", "error");
     } finally {
       isSaving = false;
-      setButtonLoading(bottomBtn, false);
-      if (applyBtn) applyBtn.disabled = false;
-      if (revertBtn) revertBtn.disabled = false;
+      setButtonLoading(applyBtn, false);
+      setButtonLoading(downloadBtn, false);
+      // has-unsaved-changes bisa saja masih true kalau ada error di
+      // atas (mis. /products gagal setelah /content sukses) — pastikan
+      // tombol tetap aktif untuk dicoba lagi, bukan ikut ke-disable
+      // oleh clearUnsavedState() yang gagal terpanggil.
+      if (document.body.classList.contains("has-unsaved-changes")) {
+        if (applyBtn) applyBtn.disabled = false;
+        const revertBtn = document.getElementById("revertBtn");
+        if (revertBtn) revertBtn.disabled = false;
+        if (downloadBtn) downloadBtn.disabled = false;
+      }
     }
   }
 
-  // ==============================================================
-  // TOPBAR: Apply Changes / Revert
-  // ==============================================================
-  function wireTopbarButtons() {
-    const applyBtn = document.getElementById("applyChangesBtn");
-    if (applyBtn) applyBtn.addEventListener("click", saveAll);
-
-    const revertBtn = document.getElementById("revertBtn");
-    if (revertBtn) revertBtn.addEventListener("click", revertChanges);
-  }
-
-  // Buang SEMUA draft yang sedang diedit (teks & foto), ambil ulang versi
-  // tersimpan terakhir dari server, lalu bangun ulang form dari situ.
-  // Ini SENGAJA tidak "undo satu langkah" — ini reset penuh ke titik
-  // terakhir kali disimpan, sesuai makna "Revert" yang diminta.
-  async function revertChanges() {
+  async function revertAll() {
     const hasUnsaved = document.body.classList.contains("has-unsaved-changes");
     if (hasUnsaved) {
-      const ok = confirm(
-        "Ini akan membuang SEMUA perubahan yang belum disimpan dan mengambil ulang versi terakhir dari server. Lanjutkan?"
-      );
+      const ok = confirm("Buang semua perubahan yang belum disimpan dan ambil ulang versi terakhir dari server?");
       if (!ok) return;
     }
 
     const revertBtn = document.getElementById("revertBtn");
-    const applyBtn = document.getElementById("applyChangesBtn");
-    if (revertBtn) setButtonLoading(revertBtn, true, "Memuat...");
-    if (applyBtn) applyBtn.disabled = true;
-    setTopbarSaveStatus("saving", "Memuat ulang...");
+    setButtonLoading(revertBtn, true, "Mengambil ulang...");
+    setSaveStatus("Mengambil ulang dari server...", "saving");
 
     try {
       await loadDraftFromServer();
@@ -1364,143 +1846,12 @@
       refreshFotoPreview();
       renderProductsSection();
       clearUnsavedState();
-      setTopbarSaveStatus("saved", "Direvert");
-    } catch (err) {
-      setTopbarSaveStatus("error", "Gagal revert");
+      setSaveStatus("Draft direset ke versi tersimpan terakhir.", "saved");
+      window.setTimeout(() => setSaveStatus("", ""), 3500);
+    } catch {
+      setSaveStatus("Gagal mengambil ulang data dari server.", "error");
     } finally {
-      if (revertBtn) setButtonLoading(revertBtn, false);
-      if (applyBtn) applyBtn.disabled = false;
+      setButtonLoading(revertBtn, false);
     }
   }
-
-  // ------------------------------------------------------------
-  // Helper status "belum disimpan" — dipakai field text (renderPrimitiveField)
-  // DAN field foto (wireFotoField), jadi disatukan di sini alih-alih
-  // duplikasi document.body.classList.add(...) di dua tempat.
-  // ------------------------------------------------------------
-  function markUnsaved() {
-    document.body.classList.add("has-unsaved-changes");
-    setTopbarSaveStatus("idle", "Ada perubahan");
-  }
-
-  function clearUnsavedState() {
-    document.body.classList.remove("has-unsaved-changes");
-  }
-
-  function setTopbarSaveStatus(state, label) {
-    const el = document.getElementById("topbarSaveStatus");
-    if (!el) return;
-    el.textContent = label || "";
-    el.setAttribute("data-state", state || "");
-  }
-
-  function downloadTextFile(filename, text) {
-    const blob = new Blob([text], { type: "text/javascript;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  // Serializer khusus: mirip JSON.stringify tapi dengan gaya penulisan
-  // JS object literal (key tanpa kutip kalau valid identifier, single
-  // quote untuk string, indentasi 2 spasi) supaya file yang dihasilkan
-  // terasa "ditulis tangan", bukan hasil dump JSON.
-  function serializeValue(value, indentLevel) {
-    const pad = "  ".repeat(indentLevel);
-    const padInner = "  ".repeat(indentLevel + 1);
-
-    if (value === null) return "null";
-
-    if (typeof value === "number" || typeof value === "boolean") {
-      return String(value);
-    }
-
-    if (typeof value === "string") {
-      return toJsString(value);
-    }
-
-    if (Array.isArray(value)) {
-      if (value.length === 0) return "[]";
-      const items = value.map(
-        (item) => padInner + serializeValue(item, indentLevel + 1)
-      );
-      return "[\n" + items.join(",\n") + "\n" + pad + "]";
-    }
-
-    if (typeof value === "object") {
-      const keys = Object.keys(value);
-      if (keys.length === 0) return "{}";
-
-      // Object kecil berisi cuma value primitif (contoh: { label: '...',
-      // href: '...' } di dalam array navbar.links) ditulis satu baris,
-      // sama seperti gaya asli content.js — supaya nanti kalau file hasil
-      // export di-diff di GitHub, diff-nya tetap rapi per-baris-per-item
-      // alih-alih tiap object pecah jadi banyak baris.
-      const allPrimitive = keys.every((k) => {
-        const v = value[k];
-        return v === null || (typeof v !== "object");
-      });
-      if (allPrimitive) {
-        const inline = keys
-          .map((k) => {
-            const keyStr = isValidIdentifier(k) ? k : toJsString(k);
-            return keyStr + ": " + serializeValue(value[k], 0);
-          })
-          .join(", ");
-        const oneLine = "{ " + inline + " }";
-        if (oneLine.length <= 100) return oneLine;
-      }
-
-      const items = keys.map((k) => {
-        const keyStr = isValidIdentifier(k) ? k : toJsString(k);
-        return padInner + keyStr + ": " + serializeValue(value[k], indentLevel + 1);
-      });
-      return "{\n" + items.join(",\n") + "\n" + pad + "}";
-    }
-
-    return "null";
-  }
-
-  function isValidIdentifier(str) {
-    return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(str);
-  }
-
-  // Pakai single-quote seperti gaya asli content.js, escape single-quote
-  // internal, dan pertahankan karakter lain (termasuk double-quote di
-  // dalam string, seperti pada field quote.cards[].text) apa adanya.
-  function toJsString(str) {
-    const escaped = String(str)
-      .replace(/\\/g, "\\\\")
-      .replace(/'/g, "\\'")
-      .replace(/\n/g, "\\n");
-    return "'" + escaped + "'";
-  }
-
-  function generateContentJsFile(content) {
-    const header =
-      "/* ==========================================================================\n" +
-      "   Rafael L3 — Portfolio\n" +
-      "   content.js — SATU-SATUNYA sumber semua teks di website ini.\n" +
-      "\n" +
-      "   File ini di-generate dari Dashboard Admin pada " +
-      new Date().toLocaleString("id-ID", { dateStyle: "long", timeStyle: "short" }) +
-      ".\n" +
-      "   Upload file ini ke assets/js/content.js di repo GitHub untuk\n" +
-      "   menerapkan perubahan ke situs live.\n" +
-      "   ========================================================================== */\n\n" +
-      "const CONTENT = ";
-
-    const footer = ";\n";
-
-    return header + serializeValue(content, 0) + footer;
-  }
-
-  // wireSaveButtons dipanggil di init() supaya tombol siap dari awal,
-  // walau baru relevan setelah dashboard terbuka.
-  document.addEventListener("DOMContentLoaded", wireSaveButtons);
 })();

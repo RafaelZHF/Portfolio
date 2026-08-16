@@ -12,6 +12,9 @@
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<!-- Leaflet — peta ringan open-source dipakai di kartu "Lokasi Pengakses"
+     pada halaman Overview. Tidak butuh API key (beda dengan Google Maps). -->
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
 <!-- Design tokens (warna, radius, shadow, "liquid glass") dipakai ulang
      langsung dari situs utama supaya dashboard konsisten secara visual. -->
 <link href="../assets/css/style.css" rel="stylesheet"/>
@@ -35,8 +38,9 @@
 
       <h1 class="login-title">Masuk dulu</h1>
       <p class="login-desc">
-        Halaman ini khusus untuk mengatur teks di situs portofolio.
-        Masukkan kredensial yang sudah kamu simpan di Cloudflare Secrets.
+        Halaman ini khusus untuk mengatur situs portofolio, shop, dan
+        preferensi tampilan. Masukkan kredensial yang sudah kamu simpan
+        di Cloudflare Secrets.
       </p>
 
       <form autocomplete="off" id="loginForm" novalidate>
@@ -65,144 +69,382 @@
        ============================================================ -->
   <div hidden id="dashboardScreen">
 
-    <header class="dashboard-topbar">
-      <div class="dashboard-topbar-left">
-        <a class="dashboard-topbar-back" href="../index.html">
-          <svg fill="none" height="14" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="14"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
-          Situs
-        </a>
-        <span class="dashboard-topbar-title">Dashboard Admin</span>
-        <span class="unsaved-dot" title="Ada perubahan yang belum disimpan"></span>
-      </div>
-      <div class="dashboard-topbar-right">
-        <span class="topbar-save-status" id="topbarSaveStatus"></span>
-        <button class="btn btn-outline" id="revertBtn" type="button" title="Buang semua perubahan yang belum disimpan, ambil ulang dari server">Revert</button>
-        <button class="btn btn-primary" id="applyChangesBtn" type="button" title="Simpan perubahan ke server — situs live langsung berubah">Apply Changes</button>
-        <span class="dashboard-user">Masuk sebagai <strong id="loggedInAs"></strong></span>
-        <button class="btn btn-outline" id="logoutBtn" type="button">Keluar</button>
-      </div>
-    </header>
+    <div class="dashboard-shell-grid">
 
-    <div class="dashboard-body">
-
-      <!-- Sidebar nav antar-section -->
-      <nav class="dashboard-nav" id="formNav"></nav>
-
-      <!-- Kolom form (di-generate otomatis dari content.js oleh admin.js) -->
-      <main class="dashboard-main">
-        <div class="dashboard-intro">
-          <h1>Atur teks & foto situs</h1>
-          <p>
-            Field di bawah mencerminkan persis struktur <code>assets/js/content.js</code>,
-            dikelompokkan per section, ditambah satu field foto (avatar
-            chat widget). Ubah field apa saja, cek hasilnya di panel
-            pratinjau di kanan, lalu klik <strong>Simpan</strong> di bawah
-            (atau <strong>Apply Changes</strong> di pojok kanan atas) —
-            situs live langsung berubah dalam hitungan detik, tanpa perlu
-            commit atau push apa pun.
-          </p>
+      <!-- ============================================================
+           SIDEBAR — dikelompokkan per grup, tiap grup bisa
+           dibuka/ditutup (collapsible), state tersimpan di
+           localStorage supaya tidak collapse ulang tiap reload.
+           Isi tiap grup ditulis statis di sini (bukan hasil generate
+           penuh dari content.js) supaya urutan & pengelompokan bisa
+           dikontrol persis seperti referensi desain. Section konten
+           yang datanya dari content.js tetap di-generate otomatis
+           oleh admin.js ke dalam #sectionMap (lihat di bawah).
+           ============================================================ -->
+      <aside class="side-nav" id="sideNav">
+        <div class="side-nav-brand">
+          <a class="side-nav-brand-link" href="../index.html">
+            <span class="side-nav-brand-mark"></span>
+            <span class="side-nav-brand-text">
+              <strong>Rafael L3</strong>
+              <small>Dashboard Admin</small>
+            </span>
+          </a>
+          <button aria-label="Ciutkan sidebar" class="side-nav-collapse-btn" id="sideNavCollapseBtn" title="Ciutkan sidebar" type="button">
+            <svg fill="none" height="15" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="15"><path d="M15 18l-6-6 6-6"></path></svg>
+          </button>
         </div>
-        <!-- Section Foto, DI LUAR #formSections yang auto-generate dari
-             content.js — foto disimpan terpisah di KV key "photo:avatar"
-             (lihat worker/src/index.js), bukan bagian dari content.js,
-             jadi section-nya ditulis manual di sini, bukan hasil generate
-             otomatis oleh buildFormFromContent() di admin.js. -->
-        <section class="form-section" id="section-foto">
-          <h2 class="form-section-title">Foto (Avatar Chat Widget)</h2>
-          <div class="form-section-body">
-            <div class="field">
-              <label class="field-label" for="fotoAvatarInput">Foto avatar</label>
-              <div class="field-image">
-                <img alt="Pratinjau foto avatar" class="field-image-preview" id="fotoAvatarPreview" src="" />
-                <div class="field-image-controls">
-                  <button class="btn btn-outline" id="fotoAvatarPickBtn" type="button">Pilih Foto...</button>
-                  <span class="field-image-filename" id="fotoAvatarFilename">Belum ada foto baru dipilih</span>
-                </div>
-                <input accept="image/png,image/jpeg,image/webp,image/gif" class="field-image-input" id="fotoAvatarInput" type="file" />
-              </div>
-              <p class="field-note">
-                Dipakai sebagai foto avatar di widget chat mengambang (kiri
-                bawah situs). Disimpan sebagai file gambar biasa (PNG/JPG/
-                WEBP/GIF), maksimal sekitar 1.5MB. Foto baru langsung aktif
-                setelah kamu klik Simpan / Apply Changes.
-              </p>
+
+        <nav class="side-nav-scroll">
+
+          <!-- ---- GRUP: MAIN ---- -->
+          <div class="side-group">
+            <p class="side-group-label">Main</p>
+            <a class="side-link is-active" data-page="overview" href="#overview">
+              <svg class="side-link-icon" fill="none" height="17" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" width="17"><path d="M3 9.5L12 3l9 6.5"></path><path d="M5 9.5V20a1 1 0 001 1h4v-6h4v6h4a1 1 0 001-1V9.5"></path></svg>
+              <span>Overview</span>
+            </a>
+          </div>
+
+          <!-- ---- GRUP: SETTINGS (bisa diciutkan) ----
+               1. UI Settings   -> teks & foto (dari content.js + foto avatar)
+               2. Product Display -> katalog shop
+               3. Profile       -> siapa yang sedang login -->
+          <div class="side-group side-group-collapsible" data-group="settings">
+            <button aria-expanded="true" class="side-group-toggle" type="button">
+              <span class="side-group-label">Settings</span>
+              <svg class="side-group-chevron" fill="none" height="13" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="13"><path d="M6 9l6 6 6-6"></path></svg>
+            </button>
+            <div class="side-group-body">
+              <a class="side-link" data-page="ui-settings" href="#ui-settings">
+                <svg class="side-link-icon" fill="none" height="17" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" width="17"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>
+                <span>UI Settings</span>
+              </a>
+              <a class="side-link" data-page="product-display" href="#product-display">
+                <svg class="side-link-icon" fill="none" height="17" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" width="17"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                <span>Product Display</span>
+                <span class="side-link-badge" id="productCountBadge">0</span>
+              </a>
+              <a class="side-link" data-page="profile" href="#profile">
+                <svg class="side-link-icon" fill="none" height="17" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" width="17"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                <span>Profile</span>
+              </a>
             </div>
           </div>
-        </section>
 
-        <!-- Section Katalog Produk (shop), DI LUAR #formSections yang
-             auto-generate dari content.js — sama seperti section Foto di
-             atas, produk disimpan terpisah di KV key "products" (lihat
-             worker/src/index.js), bukan bagian dari content.js. Daftar
-             produk & tombol tambah/hapus ditulis manual di sini,
-             isinya (daftar kartu produk) dibangun oleh
-             renderProductsSection() di admin.js. -->
-        <section class="form-section" id="section-produk">
-          <h2 class="form-section-title">Katalog Produk (Shop)</h2>
-          <div class="form-section-body">
-            <p class="field-note" style="margin-bottom:4px;">
-              Produk di bawah tampil di halaman <code>/shop/</code>. Belum
-              bisa diklik pengunjung (pembayaran menyusul) — untuk saat
-              ini cukup nama, harga, dan foto produk saja yang tampil di
-              katalog.
-            </p>
-            <div id="productList"><!-- diisi oleh admin.js --></div>
-            <button class="btn btn-outline" id="addProductBtn" type="button">+ Tambah Produk</button>
-          </div>
-        </section>
+        </nav>
 
-        <div id="formSections"><!-- diisi oleh admin.js, section teks dari content.js --></div>
-      </main>
-
-      <!-- Panel pratinjau ringan -->
-      <aside class="dashboard-preview">
-        <p class="preview-heading">Pratinjau Cepat</p>
-
-        <div class="preview-card">
-          <p class="preview-tab-label">Tab browser & SEO</p>
-          <span id="previewPageTitle"></span>
-          <span id="previewHeroHeading"></span>
-          <span id="previewHeroSub"></span>
-          <span id="previewHeroLocation"></span>
-        </div>
-
-        <div class="preview-card">
-          <p class="preview-tab-label">Genre berjalan</p>
-          <div class="preview-chips" id="previewGenreList"></div>
-        </div>
-
-        <div class="preview-card">
-          <p class="preview-tab-label">Katalog karya</p>
-          <div id="previewReleases"></div>
-        </div>
-
-        <div class="preview-card">
-          <p class="preview-tab-label">Katalog produk (shop)</p>
-          <div id="previewProducts"></div>
-        </div>
-
-        <div class="preview-card">
-          <p class="preview-tab-label">Kontak & footer</p>
-          <span id="previewEmail"></span>
-          <span id="previewFooterTagline"></span>
+        <div class="side-nav-footer">
+          <button class="side-link side-link-logout" id="logoutBtn" type="button">
+            <svg class="side-link-icon" fill="none" height="17" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" width="17"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path></svg>
+            <span>Keluar</span>
+          </button>
         </div>
       </aside>
 
-    </div>
+      <!-- ============================================================
+           KOLOM KANAN: topbar + halaman aktif
+           ============================================================ -->
+      <div class="main-col">
 
-    <!-- Bar simpan, selalu terlihat di bawah -->
-    <div class="download-bar">
-      <div>
-        <p class="download-bar-hint">
-          Menyimpan langsung mengubah situs live dalam hitungan detik
-          (data disimpan ke Cloudflare KV lewat Worker) — tidak perlu
-          commit atau push apa pun.
-        </p>
-        <p class="download-status" id="downloadStatus"></p>
+        <header class="dashboard-topbar">
+          <div class="dashboard-topbar-left">
+            <button aria-label="Buka sidebar" class="mobile-nav-btn" id="mobileNavBtn" type="button">
+              <svg fill="none" height="18" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="18"><path d="M3 12h18M3 6h18M3 18h18"></path></svg>
+            </button>
+            <span class="dashboard-topbar-title" id="topbarPageTitle">Overview</span>
+            <span class="unsaved-dot" title="Ada perubahan yang belum disimpan"></span>
+          </div>
+          <div class="dashboard-topbar-right">
+            <span class="topbar-save-status" id="topbarSaveStatus"></span>
+            <button class="btn btn-outline" id="revertBtn" title="Buang semua perubahan yang belum disimpan, ambil ulang dari server" type="button">Revert</button>
+            <button class="btn btn-primary" id="applyChangesBtn" title="Simpan perubahan ke server — situs live langsung berubah" type="button">Apply Changes</button>
+            <a class="topbar-profile" data-page="profile" href="#profile">
+              <span class="topbar-profile-avatar" id="topbarProfileAvatar"></span>
+              <span class="topbar-profile-name" id="loggedInAs"></span>
+            </a>
+          </div>
+        </header>
+
+        <main class="dashboard-pages">
+
+          <!-- ================================================================
+               PAGE: OVERVIEW
+               ================================================================ -->
+          <section class="dashboard-page is-active" data-page="overview" id="page-overview">
+
+            <div class="ov-grid">
+
+              <!-- Kartu sapaan + jam + cuaca (kiri, lebar) -->
+              <div class="ov-card ov-card-greeting">
+                <div class="ov-greeting-top">
+                  <div>
+                    <p class="ov-greeting-label" id="ovGreetingLabel">Selamat datang</p>
+                    <h1 class="ov-greeting-heading" id="ovGreetingHeading">Halo!</h1>
+                  </div>
+                  <div class="ov-weather" id="ovWeather">
+                    <span class="ov-weather-icon" id="ovWeatherIcon">—</span>
+                    <div class="ov-weather-info">
+                      <span class="ov-weather-temp" id="ovWeatherTemp">—</span>
+                      <span class="ov-weather-desc" id="ovWeatherDesc">Memuat cuaca…</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="ov-greeting-bottom">
+                  <div class="ov-clock">
+                    <span class="ov-clock-time" id="ovClockTime">--:--</span>
+                    <span class="ov-clock-zone" id="ovClockZone">WIB</span>
+                  </div>
+                  <div class="ov-date-loc">
+                    <span class="ov-date" id="ovDate">—</span>
+                    <span class="ov-loc" id="ovLoc">
+                      <svg fill="none" height="12" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="12"><path d="M21 10c0 6-9 12-9 12s-9-6-9-12a9 9 0 0118 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                      <span>Prawirotaman, Yogyakarta</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Kartu ringkasan konten (kanan atas) -->
+              <div class="ov-card ov-card-stats">
+                <p class="ov-card-heading">Ringkasan Konten</p>
+                <div class="ov-stat-row">
+                  <span class="ov-stat-label">Rilisan karya</span>
+                  <span class="ov-stat-value" id="statReleaseCount">0</span>
+                </div>
+                <div class="ov-stat-row">
+                  <span class="ov-stat-label">Genre aktif</span>
+                  <span class="ov-stat-value" id="statGenreCount">0</span>
+                </div>
+                <div class="ov-stat-row">
+                  <span class="ov-stat-label">Alat kerja</span>
+                  <span class="ov-stat-value" id="statToolCount">0</span>
+                </div>
+                <div class="ov-stat-row">
+                  <span class="ov-stat-label">Produk di shop</span>
+                  <span class="ov-stat-value" id="statProductCount">0</span>
+                </div>
+              </div>
+
+              <!-- Kartu peta lokasi pengakses (kiri bawah, lebar) -->
+              <div class="ov-card ov-card-map">
+                <div class="ov-card-heading-row">
+                  <p class="ov-card-heading">Lokasi Pengakses Saat Ini</p>
+                  <span class="ov-map-badge" id="ovMapBadge">Mendeteksi…</span>
+                </div>
+                <div class="ov-map" id="ovMapContainer"></div>
+                <p class="ov-map-note">
+                  Estimasi lokasi &amp; IP dari sesi browser yang sedang membuka
+                  dashboard ini sekarang (kamu), lewat layanan geolokasi IP
+                  publik — bukan pelacakan presisi GPS, dan hanya berjalan
+                  selagi halaman ini terbuka.
+                </p>
+              </div>
+
+              <!-- Kartu status koneksi worker (kanan bawah) -->
+              <div class="ov-card ov-card-status">
+                <p class="ov-card-heading">Status Server</p>
+                <div class="ov-status-row">
+                  <span class="ov-status-dot" data-state="checking" id="ovWorkerDot"></span>
+                  <span id="ovWorkerLabel">Mengecek koneksi Worker…</span>
+                </div>
+                <div class="ov-status-row">
+                  <span class="ov-status-dot" data-state="ok"></span>
+                  <span>Login pakai token JWT (berlaku 24 jam)</span>
+                </div>
+                <a class="ov-status-link" href="../index.html" target="_blank">
+                  Buka situs live
+                  <svg fill="none" height="11" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="11"><path d="M7 17L17 7M7 7h10v10"></path></svg>
+                </a>
+                <a class="ov-status-link" href="../shop/index.html" target="_blank">
+                  Buka halaman shop
+                  <svg fill="none" height="11" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="11"><path d="M7 17L17 7M7 7h10v10"></path></svg>
+                </a>
+              </div>
+
+            </div>
+          </section>
+
+          <!-- ================================================================
+               PAGE: UI SETTINGS — teks (auto-generate dari content.js) + foto
+               ================================================================ -->
+          <section class="dashboard-page" data-page="ui-settings" id="page-ui-settings">
+            <div class="page-intro">
+              <h1>UI Settings</h1>
+              <p>
+                Atur semua teks yang tampil di situs utama, dikelompokkan per
+                bagian, ditambah foto avatar widget chat. Field di bawah
+                mencerminkan persis struktur <code>assets/js/content.js</code>.
+                Ubah field apa saja lalu klik <strong>Apply Changes</strong> di
+                pojok kanan atas — situs live langsung berubah dalam hitungan
+                detik, tanpa commit atau push apa pun.
+              </p>
+            </div>
+
+            <div class="settings-layout">
+              <nav class="settings-subnav" id="uiSettingsSubnav"></nav>
+
+              <div class="settings-form-col">
+                <!-- Section Foto, DI LUAR auto-generate dari content.js —
+                     foto disimpan terpisah di KV key "photo:avatar". -->
+                <section class="form-section" id="section-foto">
+                  <h2 class="form-section-title">Foto (Avatar Chat Widget)</h2>
+                  <div class="form-section-body">
+                    <div class="field">
+                      <label class="field-label" for="fotoAvatarInput">Foto avatar</label>
+                      <div class="field-image">
+                        <img alt="Pratinjau foto avatar" class="field-image-preview" id="fotoAvatarPreview" src="" />
+                        <div class="field-image-controls">
+                          <button class="btn btn-outline" id="fotoAvatarPickBtn" type="button">Pilih Foto...</button>
+                          <span class="field-image-filename" id="fotoAvatarFilename">Belum ada foto baru dipilih</span>
+                        </div>
+                        <input accept="image/png,image/jpeg,image/webp,image/gif" class="field-image-input" id="fotoAvatarInput" type="file" />
+                      </div>
+                      <p class="field-note">
+                        Dipakai sebagai foto avatar di widget chat mengambang
+                        (kiri bawah situs) dan sebagai foto profil kamu di
+                        panel <strong>Profile</strong> pada dashboard ini.
+                        Disimpan sebagai file gambar biasa (PNG/JPG/WEBP/GIF),
+                        maksimal sekitar 1.5MB.
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- Section teks, di-generate otomatis dari content.js oleh
+                     admin.js ke dalam #formSections. -->
+                <div id="formSections"></div>
+              </div>
+
+              <!-- Panel pratinjau ringan -->
+              <aside class="dashboard-preview">
+                <p class="preview-heading">Pratinjau Cepat</p>
+
+                <div class="preview-card">
+                  <p class="preview-tab-label">Tab browser & SEO</p>
+                  <span id="previewPageTitle"></span>
+                  <span id="previewHeroHeading"></span>
+                  <span id="previewHeroSub"></span>
+                  <span id="previewHeroLocation"></span>
+                </div>
+
+                <div class="preview-card">
+                  <p class="preview-tab-label">Genre berjalan</p>
+                  <div class="preview-chips" id="previewGenreList"></div>
+                </div>
+
+                <div class="preview-card">
+                  <p class="preview-tab-label">Katalog karya</p>
+                  <div id="previewReleases"></div>
+                </div>
+
+                <div class="preview-card">
+                  <p class="preview-tab-label">Kontak & footer</p>
+                  <span id="previewEmail"></span>
+                  <span id="previewFooterTagline"></span>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <!-- ================================================================
+               PAGE: PRODUCT DISPLAY — katalog shop, tampilan grid card
+               ================================================================ -->
+          <section class="dashboard-page" data-page="product-display" id="page-product-display">
+            <div class="page-intro">
+              <div class="page-intro-row">
+                <div>
+                  <h1>Product Display</h1>
+                  <p>
+                    Produk di bawah tampil di halaman <code>/shop/</code>.
+                    Belum bisa diklik pengunjung (pembayaran menyusul) — untuk
+                    saat ini cukup nama, harga, dan foto produk saja yang
+                    tampil di katalog.
+                  </p>
+                </div>
+                <button class="btn btn-primary" id="addProductBtn" type="button">+ Tambah Produk</button>
+              </div>
+            </div>
+            <div class="product-grid" id="productList"><!-- diisi oleh admin.js --></div>
+          </section>
+
+          <!-- ================================================================
+               PAGE: PROFILE — akun yang sedang login
+               ================================================================ -->
+          <section class="dashboard-page" data-page="profile" id="page-profile">
+            <div class="page-intro">
+              <h1>Profile</h1>
+              <p>Info akun yang sedang mengakses dashboard admin ini.</p>
+            </div>
+
+            <div class="profile-card">
+              <div class="profile-card-top">
+                <img alt="Foto profil" class="profile-avatar" id="profileAvatarImg" src="" />
+                <div>
+                  <p class="profile-name" id="profileName">—</p>
+                  <p class="profile-role">Super Admin</p>
+                </div>
+              </div>
+
+              <div class="profile-detail-grid">
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Username</span>
+                  <span class="profile-detail-value" id="profileUsername">—</span>
+                </div>
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Status sesi</span>
+                  <span class="profile-detail-value">
+                    <span class="ov-status-dot" data-state="ok" style="display:inline-block;margin-right:6px;"></span>
+                    Aktif
+                  </span>
+                </div>
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Waktu masuk</span>
+                  <span class="profile-detail-value" id="profileLoginTime">—</span>
+                </div>
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Sesi berakhir sekitar</span>
+                  <span class="profile-detail-value" id="profileExpiry">—</span>
+                </div>
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Metode autentikasi</span>
+                  <span class="profile-detail-value">Token JWT (Cloudflare Worker)</span>
+                </div>
+                <div class="profile-detail">
+                  <span class="profile-detail-label">Token disimpan di</span>
+                  <span class="profile-detail-value">sessionStorage (hilang saat tab ditutup)</span>
+                </div>
+              </div>
+
+              <p class="profile-note">
+                Dashboard ini pakai satu akun admin tunggal (kredensial
+                tersimpan di Cloudflare Secrets) — bukan sistem multi-user,
+                jadi info di atas menampilkan sesi login kamu saat ini,
+                bukan daftar banyak pengguna.
+              </p>
+
+              <button class="btn btn-outline profile-logout-btn" id="profileLogoutBtn" type="button">Keluar dari akun ini</button>
+            </div>
+          </section>
+
+        </main>
+
+        <!-- Bar simpan, selalu terlihat di bawah -->
+        <div class="download-bar">
+          <div>
+            <p class="download-bar-hint">
+              Menyimpan langsung mengubah situs live dalam hitungan detik
+              (data disimpan ke Cloudflare KV lewat Worker) — tidak perlu
+              commit atau push apa pun.
+            </p>
+            <p class="download-status" id="downloadStatus"></p>
+          </div>
+          <button class="btn btn-primary" id="downloadBtn" type="button">Simpan Perubahan</button>
+        </div>
+
       </div>
-      <button class="btn btn-primary" id="downloadBtn" type="button">Simpan Perubahan</button>
     </div>
-
   </div>
 
 </div>
@@ -216,6 +458,8 @@
      dipakai admin.js untuk mengambil draft awal dari server. -->
 <script src="../assets/js/content.js"></script>
 <script src="../assets/js/shop-content.js"></script>
+<!-- Leaflet JS — dipakai murni untuk kartu peta di halaman Overview. -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="assets/admin.js"></script>
 </body>
 </html>
