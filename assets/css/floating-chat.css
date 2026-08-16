@@ -1,0 +1,521 @@
+/* ==========================================================================
+   Rafael L3 — Floating Chat Widget
+   floating-chat.css
+
+   Mengikuti token desain dari style.css (warna, radius, shadow, font, easing)
+   supaya menyatu dengan tema utama. Diposisikan di pojok KIRI bawah, beda
+   sisi dengan back-to-top (kanan bawah) supaya tidak tabrakan.
+   ========================================================================== */
+
+:root {
+  --fc-w: 380px;
+  --fc-h: 560px;
+  --fc-launcher-size: 58px;
+}
+
+/* ---- Wrapper root, fixed di pojok kiri bawah ---- */
+.fc-root {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 500;
+  font-family: var(--font-sans);
+  --webkit-font-smoothing: antialiased;
+}
+
+@media (min-width: 640px) {
+  .fc-root { left: 28px; bottom: 28px; }
+}
+
+/* ==========================================================================
+   LAUNCHER (badge bulat)
+   ========================================================================== */
+.fc-launcher {
+  position: relative;
+  width: var(--fc-launcher-size);
+  height: var(--fc-launcher-size);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-strong);
+  background: linear-gradient(155deg, var(--color-accent-hover), var(--color-accent) 65%);
+  box-shadow: var(--shadow-elevated), 0 0 0 1px rgba(255,255,255,0.05) inset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--color-white);
+  transition: transform 0.35s var(--ease-out-quart), box-shadow 0.35s var(--ease-out-quart);
+}
+
+.fc-launcher:hover {
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: var(--shadow-elevated), 0 0 0 1px rgba(255,255,255,0.08) inset, 0 0 24px rgba(94,106,210,0.45);
+}
+
+.fc-launcher:active { transform: translateY(0) scale(0.97); }
+
+.fc-launcher svg {
+  width: 24px;
+  height: 24px;
+  position: absolute;
+  transition: opacity 0.25s var(--ease-out-quart), transform 0.35s var(--ease-out-quart);
+}
+
+.fc-launcher .fc-icon-chat { opacity: 1; transform: scale(1) rotate(0deg); }
+.fc-launcher .fc-icon-close { opacity: 0; transform: scale(0.5) rotate(-45deg); }
+
+.fc-root.is-open .fc-launcher .fc-icon-chat { opacity: 0; transform: scale(0.5) rotate(45deg); }
+.fc-root.is-open .fc-launcher .fc-icon-close { opacity: 1; transform: scale(1) rotate(0deg); }
+
+/* Titik status "online" kecil di pojok badge */
+.fc-launcher-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: #35d07f;
+  border: 2px solid var(--color-bg);
+}
+
+.fc-launcher-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: fc-pulse 2.2s var(--ease-out-quart) infinite;
+}
+
+@keyframes fc-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(53, 208, 127, 0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(53, 208, 127, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(53, 208, 127, 0); }
+}
+
+/* Badge unread (jumlah pesan baru dari bot yang belum dilihat) */
+.fc-unread-badge {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--grad-pink);
+  color: #1a0313;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-bg);
+  transform: scale(0);
+  transition: transform 0.3s var(--ease-out-quart);
+}
+
+.fc-unread-badge.is-visible { transform: scale(1); }
+
+/* ==========================================================================
+   PANEL
+   ========================================================================== */
+.fc-panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--fc-launcher-size) + 16px);
+  width: var(--fc-w);
+  max-width: calc(100vw - 40px);
+  height: var(--fc-h);
+  max-height: calc(100vh - 140px);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-strong);
+  background: rgba(15, 16, 17, 0.82);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  box-shadow: var(--shadow-elevated), 0 0 0 1px rgba(255,255,255,0.04) inset;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transform-origin: bottom left;
+  transform: scale(0.92) translateY(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.32s var(--ease-out-quart), opacity 0.28s var(--ease-out-quart);
+}
+
+.fc-root.is-open .fc-panel {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (max-width: 420px) {
+  .fc-panel {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 128px);
+  }
+  .fc-root { left: 12px; bottom: 12px; }
+}
+
+/* ---- Header panel ---- */
+.fc-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: linear-gradient(180deg, rgba(94,106,210,0.10), transparent);
+}
+
+.fc-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(155deg, var(--color-accent-hover), var(--color-accent) 65%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-white);
+  font-weight: 700;
+  font-size: 15px;
+  flex: none;
+  position: relative;
+}
+
+/* Foto avatar bot (assets/img/stickers.jpg via CHAT_CONFIG.avatarImg),
+   dipakai bareng oleh .fc-avatar (header) dan .fc-msg-avatar (per-pesan
+   + indikator mengetik). object-fit: cover supaya foto persegi mengisi
+   penuh kotak avatar tanpa gepeng. border-radius dipasang langsung di
+   sini (bukan overflow: hidden di .fc-avatar/.fc-msg-avatar) supaya
+   .fc-avatar-dot masih boleh "nongol" keluar pojok kotak avatar alih-
+   alih ikut ter-crop kepotong oleh parent-nya sendiri. .fc-avatar-
+   fallback (inisial "R") disembunyikan secara default dan hanya
+   dimunculkan lewat kelas .fc-avatar-broken yang ditambahkan JS
+   (lihat bindAvatarImgFallback di floating-chat.js) kalau foto gagal
+   dimuat. */
+.fc-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: inherit;
+}
+
+.fc-avatar-fallback {
+  display: none;
+}
+
+.fc-avatar.fc-avatar-broken .fc-avatar-img,
+.fc-msg-avatar.fc-avatar-broken .fc-avatar-img {
+  display: none;
+}
+
+.fc-avatar.fc-avatar-broken .fc-avatar-fallback,
+.fc-msg-avatar.fc-avatar-broken .fc-avatar-fallback {
+  display: block;
+}
+
+.fc-avatar-dot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: #35d07f;
+  border: 2px solid var(--color-bg-secondary);
+}
+
+.fc-header-info { flex: 1; min-width: 0; }
+
+.fc-header-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.fc-header-status {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.3;
+  margin-top: 1px;
+}
+
+.fc-header-close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color 0.2s var(--ease-out-quart), background 0.2s var(--ease-out-quart);
+}
+
+.fc-header-close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
+.fc-header-close svg { width: 16px; height: 16px; }
+
+/* ---- Body / list pesan ---- */
+.fc-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+
+.fc-body::-webkit-scrollbar { width: 6px; }
+.fc-body::-webkit-scrollbar-track { background: transparent; }
+.fc-body::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+}
+
+.fc-msg-row {
+  display: flex;
+  gap: 8px;
+  max-width: 88%;
+  animation: fc-msg-in 0.28s var(--ease-out-quart);
+}
+
+@keyframes fc-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fc-msg-row.fc-msg-bot { align-self: flex-start; }
+.fc-msg-row.fc-msg-user { align-self: flex-end; flex-direction: row-reverse; }
+
+.fc-msg-avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(155deg, var(--color-accent-hover), var(--color-accent) 65%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--color-white);
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.fc-msg-bubble {
+  padding: 10px 13px;
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+/* ---- Teks pesan + jam gaya WhatsApp ----
+   .fc-msg-text dan .fc-msg-time murni inline, mengalir sebagai satu
+   paragraf. Browser otomatis membungkus .fc-msg-time ke baris baru
+   kalau tidak muat di ujung baris terakhir, sama seperti kata biasa
+   yang wrap — tidak butuh JS untuk mengukur lebar teks, dan tidak ada
+   elemen yang keluar dari normal flow. Efek visualnya mengikuti pola
+   WhatsApp: jam nempel di ujung baris terakhir kalau muat, atau turun
+   sendiri ke barisnya kalau tidak. */
+.fc-msg-text {
+  display: inline;
+  white-space: pre-wrap;
+}
+
+.fc-msg-time {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  vertical-align: bottom;
+  transform: translateY(-1px);
+}
+
+.fc-msg-bot .fc-msg-time { color: var(--color-text-faint); }
+.fc-msg-user .fc-msg-time { color: rgba(255, 255, 255, 0.72); }
+
+.fc-msg-bubble.fc-msg-error .fc-msg-time { color: rgba(255, 179, 179, 0.65); }
+
+.fc-msg-bot .fc-msg-bubble {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  border-bottom-left-radius: 4px;
+}
+
+.fc-msg-user .fc-msg-bubble {
+  background: var(--color-accent);
+  color: var(--color-white);
+  border-bottom-right-radius: 4px;
+}
+
+.fc-msg-bubble.fc-msg-error {
+  background: rgba(255, 90, 90, 0.1);
+  border: 1px solid rgba(255, 90, 90, 0.3);
+  color: #ffb3b3;
+}
+
+/* ---- Typing indicator ---- */
+.fc-typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+}
+
+.fc-typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-faint);
+  animation: fc-typing 1.3s ease-in-out infinite;
+}
+
+.fc-typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.fc-typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes fc-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ---- Footer / input ---- */
+.fc-footer {
+  flex: none;
+  padding: 12px 12px 14px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+
+.fc-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 6px 6px 6px 14px;
+  transition: border-color 0.2s var(--ease-out-quart), box-shadow 0.2s var(--ease-out-quart);
+}
+
+.fc-input-row:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.fc-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  max-height: 96px;
+  padding: 7px 0;
+}
+
+.fc-input::placeholder { color: var(--color-text-faint); }
+
+.fc-send {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s var(--ease-out-quart), opacity 0.2s var(--ease-out-quart), transform 0.15s var(--ease-out-quart);
+}
+
+.fc-send:hover:not(:disabled) { background: var(--color-accent-hover); }
+.fc-send:active:not(:disabled) { transform: scale(0.92); }
+
+.fc-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fc-send svg { width: 15px; height: 15px; margin-left: 1px; }
+
+.fc-footer-note {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+  letter-spacing: 0.02em;
+}
+
+/* ---- Empty state (belum ada pesan sama sekali) ---- */
+.fc-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--color-text-muted);
+  gap: 6px;
+}
+
+.fc-empty-state svg {
+  width: 34px;
+  height: 34px;
+  color: var(--color-text-faint);
+  margin-bottom: 6px;
+}
+
+.fc-empty-state strong {
+  color: var(--color-text-secondary);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.fc-empty-state span {
+  font-size: 12.5px;
+  max-width: 240px;
+  line-height: 1.5;
+}
+
+/* Screen-reader only text (untuk aksesibilitas tanpa mengubah tampilan) */
+.fc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Hormati preferensi pengguna yang mematikan animasi */
+@media (prefers-reduced-motion: reduce) {
+  .fc-launcher, .fc-panel, .fc-msg-row, .fc-launcher-dot::after, .fc-typing-dots span {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}
